@@ -1,0 +1,79 @@
+plugins:
+  - rubocop-rspec
+
+AllCops:
+  TargetRubyVersion: 3.0
+  NewCops: enable
+  SuggestExtensions: false
+
+# Generated PDF operator strings are legitimately long.
+Layout/LineLength:
+  Max: 110
+  Exclude:
+    - 'lib/acrofill/metrics.rb' # generated glyph-width data tables
+
+Metrics/MethodLength:
+  Max: 35
+  Exclude:
+    - 'benchmark/**/*'
+    - 'spec/**/*'
+
+Metrics/AbcSize:
+  Max: 48
+  Exclude:
+    - 'spec/**/*'
+
+Metrics/ParameterLists:
+  Max: 6
+
+# Command methods (fill/fill_text/fill_button) return a success boolean but
+# are not predicates; the ? suffix would be misleading.
+Naming/PredicateMethod:
+  Enabled: false
+
+# The benchmark's header row is intentionally a formatted literal.
+Style/RedundantFormat:
+  Exclude:
+    - 'benchmark/**/*'
+
+Metrics/CyclomaticComplexity:
+  Max: 15
+
+Metrics/PerceivedComplexity:
+  Max: 15
+
+Metrics/ClassLength:
+  Max: 250
+
+# Specs and benchmarks favour descriptive blocks.
+Metrics/BlockLength:
+  Exclude:
+    - 'spec/**/*'
+    - 'benchmark/**/*'
+
+# The spec suite constructs raw PDFs and asserts several related facts per
+# example; the standard RSpec granularity cops fight that style.
+RSpec/ExampleLength:
+  Enabled: false
+
+RSpec/MultipleExpectations:
+  Enabled: false
+
+RSpec/InstanceVariable:
+  Enabled: false
+
+RSpec/NoExpectationExample:
+  Enabled: false
+
+RSpec/DescribeClass:
+  Enabled: false
+
+Style/HashEachMethods:
+  Enabled: false
+
+Style/Documentation:
+  Enabled: false
+
+# Unannotated %s tokens are clearer in the small benchmark format strings.
+Style/FormatStringToken:
+  Enabled: false
