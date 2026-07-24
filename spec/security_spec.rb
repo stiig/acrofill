@@ -172,6 +172,35 @@ RSpec.describe 'malicious template hardening' do
     expect { Acrofill.field_names(path) }.to raise_error(Acrofill::Error)
   end
 
+  it 'gives up on an indirect-reference cycle instead of looping' do
+    # /V resolves 5 -> 6 -> 5 -> ...; deref's hop cap must break the loop.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [] /Count 0 >>',
+                   '<< /Fields [4 0 R] >>',
+                   '<< /FT /Tx /T (x) /Rect [0 0 10 10] /V 5 0 R >>',
+                   '6 0 R',
+                   '5 0 R'
+                 ])
+    fields = nil
+    within_budget { fields = Acrofill.fields(path) }
+    expect(fields.first.value).to be_nil
+  end
+
+  it 'terminates on a cyclic /Parent inheritance chain' do
+    # Field 4 inherits through 5, which points back to 4; the cycle guard
+    # in inherited_value must stop the /FT lookup.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [] /Count 0 >>',
+                   '<< /Fields [4 0 R] >>',
+                   '<< /T (x) /Rect [0 0 10 10] /Parent 5 0 R >>',
+                   '<< /Parent 4 0 R >>'
+                 ])
+    expect { within_budget { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), { 'x' => 'v' }) } }
+      .not_to raise_error
+  end
+
   it 'walks a deep linear /Pages chain without overflowing the stack' do
     depth = 6000
     objects = ['<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',

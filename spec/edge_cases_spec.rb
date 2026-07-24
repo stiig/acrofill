@@ -69,6 +69,48 @@ RSpec.describe 'spec-legal edge cases' do
     expect(x).to be > 50
   end
 
+  it 'registers nested names and ignores stray bare widgets among subfields' do
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [] /Count 0 >>',
+                   '<< /Fields [4 0 R] >>',
+                   '<< /FT /Tx /T (a) /Kids [5 0 R 6 0 R] >>',
+                   '<< /T (b) /Kids [7 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /Rect [0 0 10 10] >>', # no /T
+                   '<< /T (c) /Rect [0 0 10 10] >>'
+                 ])
+    expect(Acrofill.field_names(path)).to eq(['a.b.c'])
+  end
+
+  it 'leaves pushbutton fields untouched' do
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 65536 /T (go) ' \
+                   '/Rect [0 0 20 20] /AP << /N << /go 6 0 R >> >> >>',
+                   "<< /BBox [0 0 20 20] /Length 0 >>\nstream\nendstream"
+                 ])
+    Acrofill.fill_form(path, out, { 'go' => 'go' })
+
+    field = PDF::Reader::ObjectHash.new(out).values.find { |o| o.is_a?(Hash) && o[:T] == 'go' }
+    expect(field[:V]).to be_nil
+  end
+
+  it 'leaves signature fields untouched' do
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [] /Count 0 >>',
+                   '<< /Fields [4 0 R] >>',
+                   '<< /FT /Sig /T (sig) /Rect [0 0 20 20] >>'
+                 ])
+    expect { Acrofill.fill_form(path, out, { 'sig' => 'not a signature' }) }.not_to raise_error
+
+    field = PDF::Reader::ObjectHash.new(out).values.find { |o| o.is_a?(Hash) && o[:T] == 'sig' }
+    expect(field[:V]).to be_nil
+  end
+
   it 'checks a button whose on state is literally named "no"' do
     blank = "<< /BBox [0 0 12 12] /Length 0 >>\nstream\nendstream"
     path = build([

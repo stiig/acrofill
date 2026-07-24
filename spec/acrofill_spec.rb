@@ -215,6 +215,14 @@ RSpec.describe Acrofill do
       File.delete(template)
       expect(tpl.field_names).to include('name', 'agree', 'week.0')
     end
+
+    it 'reports pristine field values even after fills' do
+      tpl = described_class.new(template)
+      tpl.fill_form(File.join(@dir, 'filled.pdf'), { 'name' => 'Jane' })
+
+      name = tpl.fields.find { |f| f.name == 'name' }
+      expect(name.value).to be_nil # the snapshot is never mutated by a fill
+    end
   end
 
   describe '.fields' do
@@ -314,6 +322,90 @@ RSpec.describe Acrofill do
 
       size = appearance_streams.first[%r{/Helv ([\d.]+) Tf}, 1].to_f
       expect(size).to be_between(4, 13)
+    end
+
+    it 'right-aligns /Q 2 fields' do
+      path = RawPdf.write(@dir, [
+                            '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                            '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                            '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                            '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                            '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) ' \
+                            '/Rect [0 0 200 20] /DA (/Helv 10 Tf 0 g) /Q 2 >>'
+                          ])
+      described_class.fill_form(path, output, { 'x' => 'Hi' })
+
+      x = appearance_streams.first[/^([\d.]+) [\d.-]+ Td/, 1].to_f
+      # 200 - 2 (padding) - width("Hi" at 10pt Helvetica, 9.44pt) = 188.56
+      expect(x).to be_within(0.5).of(188.56)
+    end
+
+    it 'centers each wrapped line independently for /Q 1 multiline fields' do
+      path = RawPdf.write(@dir, [
+                            '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                            '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                            '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                            '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                            '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) ' \
+                            '/Rect [0 0 200 100] /DA (/Helv 10 Tf 0 g) /Ff 4096 /Q 1 >>'
+                          ])
+      described_class.fill_form(path, output, { 'x' => "aa bbbb\ncc" })
+
+      stream = appearance_streams.first
+      # First line "aa bbbb" is 36.14pt wide: centered x = (200 - 36.14) / 2.
+      expect(stream[/^([\d.]+) [\d.-]+ Td/, 1].to_f).to be_within(0.5).of(81.93)
+      # Second line "cc" is 10pt wide: its Td is relative, x = 95 - 81.93.
+      expect(stream[/^([\d.-]+) 0 Td/, 1].to_f).to be_within(0.5).of(13.07)
+    end
+  end
+
+  describe 'flattening' do
+    def all_stream_data(path)
+      data = +''
+      PDF::Reader.new(path).objects.each do |_ref, obj|
+        data << obj.data << "\n" if obj.is_a?(PDF::Reader::Stream)
+      end
+      data
+    end
+
+    it 'maps the appearance /Matrix into the stamp transform' do
+      ap_content = "0 0 m S\n"
+      path = RawPdf.write(@dir, [
+                            '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                            '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                            '<< /Fields [] >>',
+                            '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                            '<< /Type /Annot /Subtype /Widget /Rect [100 100 120 120] /AP << /N 6 0 R >> >>',
+                            '<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Matrix [2 0 0 2 0 0] ' \
+                            "/Length #{ap_content.bytesize} >>\nstream\n#{ap_content}endstream"
+                          ])
+      described_class.fill_form(path, output, {}, flatten: true)
+
+      # /Matrix doubles the 10x10 BBox to a 20-unit extent, which exactly
+      # fills the 20-unit /Rect: unit scale, translated to (100, 100).
+      # Ignoring the /Matrix would produce "2 0 0 2 100 100 cm" instead.
+      expect(all_stream_data(output)).to include('q 1 0 0 1 100 100 cm /AcrofillAP1 Do Q')
+    end
+
+    it 'stamps the selected checkbox state and drops unselected appearances' do
+      check_ops = '2 2 m 10 10 l' # the /Yes appearance drawing in the fixture
+
+      described_class.fill_form(template, output, { 'agree' => 'Yes' }, flatten: true)
+      expect(all_stream_data(output)).to include(check_ops)
+
+      unchecked = File.join(@dir, 'unchecked.pdf')
+      described_class.fill_form(template, unchecked, {}, flatten: true)
+      expect(all_stream_data(unchecked)).not_to include(check_ops)
+    end
+
+    it 'drops the orphaned form field objects from the output' do
+      described_class.fill_form(template, output, { 'name' => 'Jane' }, flatten: true)
+
+      leftover_fields = []
+      reader.objects.each do |_ref, obj|
+        leftover_fields << obj if obj.is_a?(Hash) && obj[:T]
+      end
+      expect(leftover_fields).to be_empty
     end
   end
 
