@@ -27,7 +27,7 @@ module Acrofill
 
       font_name, size, color_ops = parse_da(field_node)
       base_font = base_font_for(font_name)
-      align = @doc.inherited_value(field_node, :Q) || @acroform[:Q] || 0
+      align = alignment(field_node)
 
       body =
         if multiline
@@ -38,7 +38,9 @@ module Acrofill
           text = printable_text(value)
           size = [height * 0.66, 12.0].min if size.zero?
           size = shrink_to_fit(text, base_font, size, width)
-          ty = [(height - (size * (ASCENT - DESCENT))) / 2.0, size * DESCENT].max
+          # Vertically center the ascent box, matching pdftk's baseline
+          # placement exactly: ty = (h - ascent*size) / 2.
+          ty = [(height - (size * ASCENT)) / 2.0, size * DESCENT].max
           "#{fmt(line_x(text, base_font, size, width, align))} #{fmt(ty)} Td\n" \
             "(#{escape_literal(text)}) Tj\n"
         end
@@ -63,6 +65,12 @@ module Acrofill
 
     def fmt(num)
       Serializer.format_number(num.to_f)
+    end
+
+    # /Q (0 left, 1 center, 2 right), inheritable and possibly indirect.
+    def alignment(field_node)
+      align = @doc.deref(@doc.inherited_value(field_node, :Q) || @acroform[:Q])
+      align.is_a?(Integer) ? align : 0
     end
 
     def line_x(text, base_font, size, width, align)
@@ -117,12 +125,17 @@ module Acrofill
       lines
     end
 
+    # Array entries may legally be indirect objects, so each corner is
+    # dereferenced; a rect that is not four numbers is unusable.
     def normalized_rect(rect)
       rect = @doc.deref(rect)
       return nil unless rect.is_a?(Array) && rect.size == 4
 
-      xs = [rect[0].to_f, rect[2].to_f].sort
-      ys = [rect[1].to_f, rect[3].to_f].sort
+      nums = rect.map { |n| @doc.deref(n) }
+      return nil unless nums.all?(Numeric)
+
+      xs = [nums[0].to_f, nums[2].to_f].sort
+      ys = [nums[1].to_f, nums[3].to_f].sort
       [xs[0], ys[0], xs[1], ys[1]]
     end
 

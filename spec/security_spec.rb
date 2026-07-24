@@ -14,21 +14,8 @@ RSpec.describe 'malicious template hardening' do
     end
   end
 
-  # Minimal raw-PDF assembler: objects is an array of body strings, 1-indexed.
   def build(objects)
-    out = +"%PDF-1.4\n"
-    offsets = objects.each_with_index.map do |body, idx|
-      offset = out.bytesize
-      out << "#{idx + 1} 0 obj\n#{body}\nendobj\n"
-      offset
-    end
-    xref = out.bytesize
-    out << "xref\n0 #{objects.size + 1}\n0000000000 65535 f \n"
-    offsets.each { |o| out << format("%010d 00000 n \n", o) }
-    out << "trailer\n<< /Size #{objects.size + 1} /Root 1 0 R >>\nstartxref\n#{xref}\n%%EOF\n"
-    path = File.join(@dir, 'evil.pdf')
-    File.binwrite(path, out.b)
-    path
+    RawPdf.write(@dir, objects, name: 'evil.pdf')
   end
 
   def within_budget(&block)
@@ -160,5 +147,57 @@ RSpec.describe 'malicious template hardening' do
     path = File.join(@dir, 'garbage.pdf')
     File.binwrite(path, "%PDF-1.4\nnot a real pdf at all\n%%EOF")
     expect { Acrofill.field_names(path) }.to raise_error(Acrofill::Error)
+  end
+
+  it 'wraps a parser stack overflow from deeply nested objects as Acrofill::Error' do
+    # pdf-reader's recursive-descent parser overflows the Ruby stack on
+    # this input; the parse boundary must convert that SystemStackError.
+    nested = ('[' * 10_000) + (']' * 10_000)
+    path = build([
+                   "<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R /Junk #{nested} >>",
+                   '<< /Type /Pages /Kids [] /Count 0 >>',
+                   '<< /Fields [] >>'
+                 ])
+    expect { within_budget { Acrofill.field_names(path) } }.to raise_error(Acrofill::Error)
+  end
+
+  it 'wraps lazy parse failures from a corrupt object body as Acrofill::Error' do
+    # The xref and trailer are valid, so ObjectHash.new succeeds; the
+    # corrupt body only surfaces when objects are materialized later.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [] /Count 0 >>',
+                   '<< /Broken >]>'
+                 ])
+    expect { Acrofill.field_names(path) }.to raise_error(Acrofill::Error)
+  end
+
+  it 'walks a deep linear /Pages chain without overflowing the stack' do
+    depth = 6000
+    objects = ['<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+               '<< /Type /Pages /Kids [4 0 R] /Count 0 >>',
+               '<< /Fields [] >>']
+    (0...depth).each do |level|
+      obj_num = 4 + level
+      kids = level == depth - 1 ? '[]' : "[#{obj_num + 1} 0 R]"
+      objects << "<< /Type /Pages /Kids #{kids} /Count 0 >>"
+    end
+    path = build(objects)
+    expect { within_budget { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), {}, flatten: true) } }
+      .not_to raise_error
+  end
+
+  it 'walks a deep linear field /Kids chain without overflowing the stack' do
+    depth = 6000
+    objects = ['<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+               '<< /Type /Pages /Kids [] /Count 0 >>',
+               '<< /Fields [4 0 R] >>']
+    (0...depth).each do |level|
+      obj_num = 4 + level
+      kids = level == depth - 1 ? '' : "/Kids [#{obj_num + 1} 0 R]"
+      objects << "<< /T (f#{level}) #{kids} >>"
+    end
+    path = build(objects)
+    expect { within_budget { Acrofill.field_names(path) } }.not_to raise_error
   end
 end

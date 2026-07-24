@@ -21,7 +21,8 @@ module Acrofill
       # single logical field, e.g. "SSN" repeated on every page) — filling
       # must update all of them.
       @fields = Hash.new { |h, k| h[k] = [] }
-      collect_fields(doc.deref(@acroform[:Fields]) || [], nil, {})
+      roots = doc.deref(@acroform[:Fields])
+      collect_fields(roots.is_a?(Array) ? roots : [])
     end
 
     # Metadata for every logical field, in document order.
@@ -31,7 +32,7 @@ module Acrofill
         Field.new(
           name: name,
           type: type,
-          value: decode_text_string(groups.first[:node][:V]),
+          value: decode_text_string(@doc.deref(groups.first[:node][:V])),
           states: type == :Btn ? on_states(all_widgets(groups)) : nil
         )
       end
@@ -103,7 +104,9 @@ module Acrofill
     # Checkboxes and radio groups carry per-state appearance streams, so
     # filling only selects a state: /V on the field, /AS on each widget.
     # The value may be a state name ("Yes"), or anything non-empty when the
-    # group has a single on state. Empty, "Off" or false-ish unchecks.
+    # group has a single on state. Empty, "Off" or false-ish unchecks —
+    # unless the value exactly names an on state (a checkbox whose state is
+    # literally called "no" must remain checkable).
     def fill_button(groups, value)
       widgets = all_widgets(groups)
       states = on_states(widgets)
@@ -112,10 +115,10 @@ module Acrofill
       # symbol creation from attacker-controlled field values).
       named = states.find { |s| s.to_s == value }
       state =
-        if ['', 'Off', 'false', 'no'].include?(value)
-          :Off
-        elsif named
+        if named
           named
+        elsif ['', 'Off', 'false', 'no'].include?(value)
+          :Off
         elsif states.size == 1
           states.first
         else
@@ -158,29 +161,43 @@ module Acrofill
       false
     end
 
-    def collect_fields(kids, prefix, seen)
-      kids.each do |ref|
+    # Depth-first, document-order walk over the field tree. Iterative with
+    # an explicit stack of [ref, prefix] pairs (a deep linear /Kids chain
+    # must not overflow the Ruby stack), with a visited set against cycles
+    # and shared nodes.
+    def collect_fields(roots)
+      seen = {}
+      stack = roots.reverse.map { |ref| [ref, nil] }
+      until stack.empty?
+        ref, prefix = stack.pop
         next if visited?(ref, seen)
 
         node = @doc.deref(ref)
         next unless node.is_a?(Hash)
 
         name = [prefix, decode_name(node[:T])].compact.join('.')
-        child_refs = @doc.deref(node[:Kids]) || []
-        child_pairs = child_refs.map { |kid| [kid, @doc.deref(kid)] }
-                                .select { |_kid, dict| dict.is_a?(Hash) }
-        subfields, widgets = child_pairs.partition { |_kid, dict| dict.key?(:T) }
+        subfields, widgets = partition_kids(node)
 
         if subfields.any?
-          # Recurse only into the named subfields; a stray bare widget mixed
+          # Descend only into the named subfields; a stray bare widget mixed
           # into the same /Kids must not register itself under this name.
-          collect_fields(subfields.map(&:first), name, seen)
+          stack.concat(subfields.map { |kid, _dict| [kid, name] }.reverse)
         else
           widget_dicts = widgets.map(&:last)
           widget_dicts = [node] if widget_dicts.empty? && node[:Rect]
           @fields[name] << { node: node, widgets: widget_dicts } unless name.empty?
         end
       end
+    end
+
+    # Splits a node's /Kids into named subfields and bare widgets, dropping
+    # anything that does not deref to a dictionary.
+    def partition_kids(node)
+      child_refs = @doc.deref(node[:Kids])
+      child_refs = [] unless child_refs.is_a?(Array)
+      child_refs.map { |kid| [kid, @doc.deref(kid)] }
+                .select { |_kid, dict| dict.is_a?(Hash) }
+                .partition { |_kid, dict| dict.key?(:T) }
     end
 
     def decode_name(raw)
@@ -207,7 +224,9 @@ module Acrofill
     end
 
     def flatten_page(page)
-      annots = (@doc.deref(page[:Annots]) || []).map { |a| [a, @doc.deref(a)] }
+      annot_refs = @doc.deref(page[:Annots])
+      annot_refs = [] unless annot_refs.is_a?(Array)
+      annots = annot_refs.map { |a| [a, @doc.deref(a)] }
       widgets, others = annots.partition { |_ref, dict| dict.is_a?(Hash) && dict[:Subtype] == :Widget }
       return if widgets.empty?
 
@@ -246,16 +265,16 @@ module Acrofill
       dict = xobject.is_a?(StreamObject) ? xobject.dict : xobject&.hash
       return nil unless dict.is_a?(Hash)
 
-      bbox = @doc.deref(dict[:BBox])
-      rect = @doc.deref(widget[:Rect])
-      return nil unless bbox.is_a?(Array) && rect.is_a?(Array)
+      bbox = normalize_box(@doc.deref(dict[:BBox]))
+      rect = normalize_box(@doc.deref(widget[:Rect]))
+      return nil unless bbox && rect
 
       # Appearance streams are form XObjects, but /Type and /Subtype are
       # sometimes omitted; /Do requires them.
       dict[:Type] ||= :XObject
       dict[:Subtype] ||= :Form
 
-      llx, lly, urx, ury = normalize_box(rect)
+      llx, lly, urx, ury = rect
       bx0, by0, bx1, by1 = transformed_bbox(bbox, @doc.deref(dict[:Matrix]))
       bw = bx1 - bx0
       bh = by1 - by0
@@ -269,10 +288,11 @@ module Acrofill
       "q #{ops.join(' ')} cm /#{name} Do Q"
     end
 
-    # Bounding box of the BBox corners after the form's /Matrix (identity
-    # when absent or malformed).
+    # Bounding box of the (already normalized) BBox corners after the
+    # form's /Matrix (identity when absent or malformed).
     def transformed_bbox(bbox, matrix)
-      x0, y0, x1, y1 = normalize_box(bbox)
+      x0, y0, x1, y1 = bbox
+      matrix = matrix.map { |m| @doc.deref(m) } if matrix.is_a?(Array)
       return [x0, y0, x1, y1] unless matrix.is_a?(Array) && matrix.size == 6 &&
                                      matrix.all?(Numeric)
 
@@ -302,9 +322,17 @@ module Acrofill
       normal
     end
 
+    # Derefs each element (array entries may legally be indirect objects)
+    # and returns [llx, lly, urx, ury], or nil when the box is not four
+    # numbers.
     def normalize_box(box)
-      xs = [box[0].to_f, box[2].to_f].sort
-      ys = [box[1].to_f, box[3].to_f].sort
+      return nil unless box.is_a?(Array) && box.size == 4
+
+      nums = box.map { |n| @doc.deref(n) }
+      return nil unless nums.all?(Numeric)
+
+      xs = [nums[0].to_f, nums[2].to_f].sort
+      ys = [nums[1].to_f, nums[3].to_f].sort
       [xs[0], ys[0], xs[1], ys[1]]
     end
 

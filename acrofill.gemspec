@@ -15,11 +15,13 @@ Gem::Specification.new do |spec|
   spec.metadata = {
     'homepage_uri' => spec.homepage,
     'source_code_uri' => spec.homepage,
+    'changelog_uri' => "#{spec.homepage}/blob/main/CHANGELOG.md",
+    'bug_tracker_uri' => "#{spec.homepage}/issues",
     'rubygems_mfa_required' => 'true'
   }
-  spec.required_ruby_version = '>= 3.0'
+  spec.required_ruby_version = '>= 3.2'
 
-  spec.files = Dir['lib/**/*.rb'] + ['README.md', 'LICENSE.txt']
+  spec.files = Dir['lib/**/*.rb'] + ['README.md', 'CHANGELOG.md', 'LICENSE.txt']
   spec.require_paths = ['lib']
 
   spec.add_dependency 'pdf-reader', '~> 2.4'

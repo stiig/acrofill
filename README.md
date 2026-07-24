@@ -137,9 +137,10 @@ Acrofill is pure Ruby with no `eval`/`system`/native calls in its hot
 path, so the worst an input can do is cause an exception — never memory
 corruption or code execution. Specifically it defends against:
 
-- **Cyclic and exponentially-shared object graphs** — the page tree and
-  field tree walkers carry visited-sets, so a `/Pages` or `/Kids` cycle,
-  or a "billion laughs" DAG, terminates in O(objects) instead of hanging
+- **Cyclic, exponentially-shared and deeply nested object graphs** — the
+  page tree and field tree walkers are iterative and carry visited-sets,
+  so a `/Pages` or `/Kids` cycle, a "billion laughs" DAG, or a
+  thousands-deep linear chain terminates in O(objects) instead of hanging
   or overflowing the stack.
 - **Content-stream injection via `/DA`** — the template's default
   appearance string is sanitized: the font name must be a regular PDF
@@ -150,8 +151,9 @@ corruption or code execution. Specifically it defends against:
   mistyped dictionaries are clamped or rejected rather than crashing the
   writer.
 - **Encrypted / unparseable input** — rejected up front; every failure
-  at the parse boundary surfaces as `Acrofill::Error`, so callers only
-  ever rescue one error type.
+  at the parse boundary surfaces as `Acrofill::Error` (including lazy
+  per-object parse errors and parser stack overflow on pathologically
+  nested objects), so callers only ever rescue one error type.
 
 ## Feature matrix
 

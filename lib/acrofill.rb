@@ -14,8 +14,8 @@ module Acrofill
   class Error < StandardError; end
 
   # Mirrors the PdfForms.new(pdftk_path) constructor shape.
-  def self.new(*args)
-    Filler.new(*args)
+  def self.new(*)
+    Filler.new(*)
   end
 
   def self.fill_form(template, destination, data = {}, options = {})
