@@ -45,6 +45,11 @@ Metrics/PerceivedComplexity:
 Metrics/ClassLength:
   Max: 250
 
+# metrics.rb is mostly generated glyph-width data.
+Metrics/ModuleLength:
+  Exclude:
+    - 'lib/acrofill/metrics.rb'
+
 # Specs and benchmarks favour descriptive blocks.
 Metrics/BlockLength:
   Exclude:

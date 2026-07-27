@@ -147,9 +147,10 @@ corruption or code execution. Specifically it defends against:
   name and only well-formed colour operators (`g`/`rg`/`k`) are copied
   into generated appearances. Field **values** are always written as
   escaped literals / hex strings, never as operators.
-- **Malformed scalars** — non-finite reals, deeply nested arrays, and
-  mistyped dictionaries are clamped or rejected rather than crashing the
-  writer.
+- **Malformed scalars and mistyped structure** — non-finite reals, deeply
+  nested arrays, a `/Resources` that is not a dictionary, a `/Root` that
+  points nowhere: each is clamped, replaced or rejected rather than
+  raising a `TypeError`/`NoMethodError` out of the middle of a fill.
 - **Encrypted / unparseable input** — rejected up front; every failure
   at the parse boundary surfaces as `Acrofill::Error` (including lazy
   per-object parse errors and parser stack overflow on pathologically
@@ -162,8 +163,11 @@ Supported:
 - Text fields (`/Tx`) — hierarchical names (`parent.kid`), inherited
   `/DA`, alignment via `/Q` (left/center/right), auto font size (`0 Tf`),
   shrink-to-fit for overflowing values, multiline fields (`/Ff` bit 13)
-  with word wrapping, standard-14 width metrics
-  (Helvetica/Courier/Times).
+  with word wrapping, and WinAnsi width metrics for all standard-14 text
+  cuts (Helvetica/Times/Courier, regular through bold-italic). A
+  template's own `/BaseFont` — `ArialMT`, `TimesNewRomanPS-BoldMT`, an
+  embedded subset — is classified by family and weight rather than all
+  measured as Helvetica.
 - Checkboxes and radio groups (`/Btn`) — state selection via `/V`+`/AS`
   using the template's own appearance states.
 - Choice fields (`/Ch`) — value set and rendered like text.

@@ -298,6 +298,19 @@ RSpec.describe Acrofill do
       expect(stream).to include('TL')
       expect(stream).to include('(second)')
     end
+
+    it 'breaks lines at the last word that still fits the box' do
+      # The "notes" widget is 200pt wide, so 196pt of usable text at 10pt
+      # Helvetica. This pins the break point: measuring words with anything
+      # other than the real glyph widths moves it by a word.
+      described_class.fill_form(
+        template, output,
+        { 'notes' => 'and a much longer second line that has to wrap somewhere' }
+      )
+
+      lines = appearance_streams.first.scan(/\((.*)\) Tj/).flatten
+      expect(lines).to eq(['and a much longer second line that has to', 'wrap somewhere'])
+    end
   end
 
   describe 'appearance layout' do

@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-27
+
+### Fixed
+
+- Pages whose `/Type` entry is missing are no longer skipped: flattening
+  such a document silently produced an unflattened file.
+- A widget whose appearance cannot be regenerated (degenerate `/Rect`)
+  now has its `/AP` dropped instead of keeping the appearance of the
+  *previous* value while `/V` already holds the new one.
+- A page `/Resources` or `/Resources /XObject` that is not a dictionary
+  no longer raises `TypeError` while flattening, and a `/Root` that is
+  missing or not a dictionary raises `Acrofill::Error` instead of
+  `NoMethodError`.
+- Filling a field whose fully-qualified name is shared by several field
+  dictionaries no longer depends on the return value of the first fill.
+
+### Changed
+
+- Text metrics now cover all standard-14 text cuts (Times bold/italic,
+  the Courier family, the oblique Helvetica cuts) over the full
+  WinAnsiEncoding range instead of ASCII-only Helvetica/Courier/
+  Times-Roman, so accented characters and bold or serif faces are
+  measured rather than approximated. Widths are WinAnsi-correct: `'`
+  measured 222 (StandardEncoding `quoteright`) where appearances
+  actually emit `quotesingle`.
+- Unknown `/BaseFont` names (`ArialMT`, `TimesNewRomanPS-BoldMT`, subset
+  faces) are classified by family and weight instead of all falling back
+  to Helvetica.
+- One fallback Helvetica font object is now shared by every generated
+  appearance; a 50-field form previously wrote 50 identical font
+  dictionaries.
+- Flattening moved out of `Form` into its own `Acrofill::Flattener`.
+
 ## [0.1.2] - 2026-07-24
 
 ### Added
@@ -54,7 +87,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PdfForms`-compatible entry points (`Acrofill.new`, `fill_form`, `fields`,
   `field_names`).
 
-[Unreleased]: https://github.com/stiig/acrofill/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/stiig/acrofill/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/stiig/acrofill/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/stiig/acrofill/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/stiig/acrofill/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/stiig/acrofill/releases/tag/v0.1.0

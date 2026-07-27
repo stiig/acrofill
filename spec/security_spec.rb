@@ -132,6 +132,50 @@ RSpec.describe 'malicious template hardening' do
       .not_to raise_error
   end
 
+  it 'replaces a mistyped /Resources dictionary instead of indexing it' do
+    # Indexing an Array with a Symbol raises TypeError; the flatten path
+    # must treat a non-dictionary /Resources as absent.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] ' \
+                   '/Resources [1 2 3] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Btn /T (b) /Rect [0 0 20 20] /AS /Yes ' \
+                   '/AP << /N << /Yes 6 0 R >> >> >>',
+                   "<< /BBox [0 0 20 20] /Length 0 >>\nstream\nendstream"
+                 ])
+    expect { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), {}, flatten: true) }
+      .not_to raise_error
+  end
+
+  it 'replaces a mistyped /XObject subdictionary instead of indexing it' do
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] ' \
+                   '/Resources << /XObject 7 0 R >> >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Btn /T (b) /Rect [0 0 20 20] /AS /Yes ' \
+                   '/AP << /N << /Yes 6 0 R >> >> >>',
+                   "<< /BBox [0 0 20 20] /Length 0 >>\nstream\nendstream",
+                   '[1 2 3]'
+                 ])
+    expect { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), {}, flatten: true) }
+      .not_to raise_error
+  end
+
+  it 'raises Acrofill::Error when /Root points at a missing object' do
+    path = build(['<< /Type /Catalog /Pages 2 0 R >>', '<< /Type /Pages /Kids [] /Count 0 >>'])
+    File.binwrite(path, File.binread(path).sub('/Root 1 0 R', '/Root 99 0 R'))
+    expect { Acrofill.field_names(path) }.to raise_error(Acrofill::Error, /catalog/)
+  end
+
+  it 'raises Acrofill::Error when /Root is not a dictionary' do
+    path = build(['42', '<< /Type /Pages /Kids [] /Count 0 >>'])
+    expect { Acrofill.field_names(path) }.to raise_error(Acrofill::Error, /catalog/)
+  end
+
   it 'surfaces only Acrofill::Error for an encrypted/undecryptable document' do
     path = build([
                    '<< /Type /Catalog /Pages 2 0 R >>',

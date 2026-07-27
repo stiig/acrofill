@@ -11,6 +11,8 @@ module Acrofill
   # materialized once via pdf-reader (which transparently handles xref
   # streams and object streams), then mutated in place before writing.
   class Document
+    PAGE_NODE_TYPES = %i[Pages Page].freeze
+
     attr_reader :objects, :trailer
 
     def initialize(path)
@@ -96,8 +98,14 @@ module Acrofill
       obj.is_a?(PDF::Reader::Reference) ? obj : add(obj)
     end
 
+    # The document catalog. The trailer may point at a missing or mistyped
+    # object, so this is a parse-boundary check too: callers get an
+    # Acrofill::Error rather than a NoMethodError on nil.
     def root
-      deref(@trailer[:Root])
+      node = deref(@trailer[:Root])
+      raise Error, 'PDF has no document catalog' unless node.is_a?(Hash)
+
+      node
     end
 
     # Depth-first, document-order walk over the /Pages tree. Iterative with
@@ -118,7 +126,7 @@ module Acrofill
           seen[node.id] = true
         end
 
-        case dict[:Type]
+        case node_type(dict)
         when :Pages
           kids = deref(dict[:Kids])
           stack.concat(kids.reverse) if kids.is_a?(Array)
@@ -139,6 +147,20 @@ module Acrofill
         node = deref(node[:Parent])
       end
       nil
+    end
+
+    private
+
+    # /Type is required on page-tree nodes but plenty of real generators omit
+    # it, and a page skipped here is a page silently not flattened. Infer it
+    # from the shape instead: a node with /Kids is an internal node, anything
+    # else reached from the page tree is a leaf.
+    def node_type(dict)
+      type = deref(dict[:Type])
+      return type if PAGE_NODE_TYPES.include?(type)
+      return nil if type.is_a?(Symbol) # something else entirely, e.g. /Font
+
+      dict.key?(:Kids) ? :Pages : :Page
     end
   end
 end
