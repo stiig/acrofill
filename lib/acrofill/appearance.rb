@@ -7,6 +7,9 @@ module Acrofill
     PADDING = 2.0
     # pdftk offsets the first multiline row by 1pt from the box top.
     TOP_OFFSET = 1.0
+
+    # The drawable area of one widget: its size and the field's /Q.
+    Box = Struct.new(:width, :height, :align)
     # Colour-setting operators allowed in a /DA string, and their operand counts.
     COLOR_OP_ARITY = { 'g' => 1, 'rg' => 3, 'k' => 4 }.freeze
 
@@ -18,51 +21,65 @@ module Acrofill
 
     # Returns a Reference to the new appearance XObject, or nil when the
     # widget geometry is unusable.
-    def build(field_node, widget, value, multiline: false)
+    def build(field_node, widget, value, multiline: false, comb: nil)
       rect = normalized_rect(widget[:Rect] || @doc.inherited_value(field_node, :Rect))
       return nil unless rect
 
-      width = rect[2] - rect[0]
-      height = rect[3] - rect[1]
-      return nil if width <= 0 || height <= 0
+      box = Box.new(rect[2] - rect[0], rect[3] - rect[1], alignment(field_node))
+      return nil if box.width <= 0 || box.height <= 0
 
       font_name, size, color_ops = parse_da(field_node)
       font = @fonts.metrics(font_name)
-      align = alignment(field_node)
+      size, body = draw(value, font, size, box, multiline: multiline, comb: comb)
 
-      body =
-        if multiline
-          size = 12.0 if size <= 0
-          size = size.clamp(2.0, 144.0)
-          multiline_body(value, font, size, width, height, align)
-        else
-          text = printable_text(value)
-          size = [height * 0.66, 12.0].min if size.zero?
-          size = shrink_to_fit(text, font, size, width)
-          "#{fmt(line_x(text, font, size, width, align))} #{fmt(baseline(height, font, size))} Td\n" \
-            "(#{escape_literal(text)}) Tj\n"
-        end
-
-      content = +"/Tx BMC\nq\nBT\n"
-      content << "#{color_ops}\n" unless color_ops.empty?
-      content << "/#{font_name} #{fmt(size)} Tf\n"
-      content << body
-      content << "ET\nQ\nEMC\n"
-
-      dict = {
-        Type: :XObject,
-        Subtype: :Form,
-        FormType: 1,
-        BBox: [0, 0, width, height],
-        Resources: { Font: { font_name.to_sym => @fonts.reference(font_name) } }
-      }
-      @doc.add(StreamObject.new(dict, content.b))
+      @doc.add(StreamObject.new(appearance_dict(font_name, box),
+                                content(font_name, size, color_ops, body).b))
     end
 
     private
 
     def fmt(num)
       Serializer.format_number(num.to_f)
+    end
+
+    # The operators drawing +value+, and the point size they were laid out
+    # at — auto-sizing and shrink-to-fit both adjust the /DA size.
+    def draw(value, font, size, box, multiline:, comb:)
+      if multiline
+        size = (size <= 0 ? 12.0 : size).clamp(2.0, 144.0)
+        [size, multiline_body(value, font, size, box)]
+      elsif comb
+        size = auto_size(size, box.height).clamp(2.0, 144.0)
+        [size, comb_body(font.encode(printable_text(value)), font, size, box, comb)]
+      else
+        text = font.encode(printable_text(value))
+        size = shrink_to_fit(text, font, auto_size(size, box.height), box.width)
+        [size, "#{fmt(line_x(text, font, size, box))} #{fmt(baseline(box.height, font, size))} Td\n" \
+               "(#{escape_literal(text)}) Tj\n"]
+      end
+    end
+
+    # A /DA size of 0 means "fit the box"; acrofill caps that at 12pt.
+    def auto_size(size, height)
+      size.zero? ? [height * 0.66, 12.0].min : size
+    end
+
+    def content(font_name, size, color_ops, body)
+      stream = +"/Tx BMC\nq\nBT\n"
+      stream << "#{color_ops}\n" unless color_ops.empty?
+      stream << "/#{font_name} #{fmt(size)} Tf\n"
+      stream << body
+      stream << "ET\nQ\nEMC\n"
+    end
+
+    def appearance_dict(font_name, box)
+      {
+        Type: :XObject,
+        Subtype: :Form,
+        FormType: 1,
+        BBox: [0, 0, box.width, box.height],
+        Resources: { Font: { font_name.to_sym => @fonts.reference(font_name) } }
+      }
     end
 
     # Where pdftk puts a single line's baseline: the ascent box centered in
@@ -84,31 +101,49 @@ module Acrofill
       align.is_a?(Integer) ? align : 0
     end
 
-    def line_x(text, font, size, width, align)
+    def line_x(text, font, size, box)
       text_width = Metrics.string_width(text, font.widths, size)
-      case align
-      when 1 then [(width - text_width) / 2.0, PADDING].max
-      when 2 then [width - PADDING - text_width, PADDING].max
+      case box.align
+      when 1 then [(box.width - text_width) / 2.0, PADDING].max
+      when 2 then [box.width - PADDING - text_width, PADDING].max
       else PADDING
       end
     end
 
+    # A comb field divides its box into /MaxLen equal cells and centers one
+    # character in each; /Q picks the run of cells the value occupies. Each
+    # glyph is positioned absolutely, the way pdftk writes it.
+    def comb_body(text, font, size, box, cells)
+      cell = box.width / cells.to_f
+      chars = text.chars
+      first = case box.align
+              when 1 then [(cells - chars.size) / 2, 0].max
+              when 2 then [cells - chars.size, 0].max
+              else 0
+              end
+      ty = fmt(baseline(box.height, font, size))
+      chars.each_with_index.map do |char, index|
+        x = ((first + index + 0.5) * cell) - (Metrics.string_width(char, font.widths, size) / 2.0)
+        "1 0 0 1 #{fmt(x)} #{ty} Tm\n(#{escape_literal(char)}) Tj\n"
+      end.join
+    end
+
     # Greedy word wrap, top-down, honouring explicit line breaks. Lines
     # that would fall below the box are clipped by the BBox.
-    def multiline_body(value, font, size, width, height, align)
-      max_width = width - (2 * PADDING)
+    def multiline_body(value, font, size, box)
+      max_width = box.width - (2 * PADDING)
       lines = value.to_s.split(/\r\n|[\r\n]/).flat_map do |paragraph|
-        wrap_line(printable_text(paragraph), font, size, max_width)
+        wrap_line(font.encode(printable_text(paragraph)), font, size, max_width)
       end
 
       # pdftk spaces rows by the font's FontBBox extent and drops the first
       # baseline by that extent from the top of the box.
       leading = font.line_height(size)
-      first_y = height - font.top(size) + TOP_OFFSET
+      first_y = box.height - font.top(size) + TOP_OFFSET
       body = "#{fmt(leading)} TL\n"
       previous_x = 0.0
       lines.each_with_index do |line, index|
-        x = line_x(line, font, size, width, align)
+        x = line_x(line, font, size, box)
         body << "#{fmt(x - previous_x)} #{index.zero? ? fmt(first_y) : '0'} Td\n"
         body << "(#{escape_literal(line)}) Tj\nT*\n"
         previous_x = x

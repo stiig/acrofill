@@ -15,6 +15,7 @@ module Acrofill
   #   widths     /Widths + /FirstChar, else the standard-14 table
   #   ascender   /FontDescriptor /Ascent, else standard-14 AFM, else 800
   #   FontBBox   /FontDescriptor /FontBBox, else standard-14 AFM, else 900/-200
+  #   codes      /Encoding /Differences remap the value's bytes
   #
   # The standard-14 fallbacks apply only to a BaseFont that literally names
   # one of the fourteen; a face merely *resembling* one (ArialMT and friends)
@@ -29,6 +30,7 @@ module Acrofill
     # not consult /MissingWidth (verified — setting it changes nothing).
     OUT_OF_RANGE_WIDTH = 0
     SUBSET_PREFIX = /\A[A-Z]{6}\+/
+    IDENTITY = Array.new(256) { |code| code }.freeze
 
     def initialize(doc, acroform)
       @doc = doc
@@ -82,8 +84,56 @@ module Acrofill
       name = base_font_name(dict)
       standard = Metrics.standard_font(name)
       ascender, descender, top, bottom = vertical(dict, standard)
-      Metrics::Font.new(widths(dict) || Metrics.widths_for(name), ascender, descender, top, bottom)
-                   .freeze
+      Metrics::Font.new(widths(dict) || Metrics.widths_for(name),
+                        ascender, descender, top, bottom, remap(dict)).freeze
+    end
+
+    # A 256-entry code translation table when /Encoding /Differences moves
+    # glyphs to codes other than their WinAnsi ones, else nil. Without it a
+    # value is drawn with whatever glyphs happen to sit at its bytes: a font
+    # that puts "A" at code 90 would render "AZ" as "ZA".
+    def remap(dict)
+      differences = differences(dict)
+      return nil if differences.empty?
+
+      by_code = {}
+      Metrics::WIN_ANSI_GLYPHS.each_with_index do |glyph, index|
+        by_code[index + Metrics::FIRST_CODE] = glyph if glyph
+      end
+      differences.each { |code, glyph| by_code[code] = glyph }
+
+      at = {}
+      by_code.each { |code, glyph| at[glyph] ||= code }
+      table = Array.new(256) { |code| code }
+      Metrics::WIN_ANSI_GLYPHS.each_with_index do |glyph, index|
+        code = glyph && at[glyph]
+        table[index + Metrics::FIRST_CODE] = code if code
+      end
+      table == IDENTITY ? nil : table.freeze
+    end
+
+    # /Differences is a flat array where an integer restarts the code
+    # counter and each following name takes the next code (PDF 32000
+    # §9.6.6.1).
+    def differences(dict)
+      encoding = @doc.deref(dict[:Encoding])
+      return {} unless encoding.is_a?(Hash)
+
+      entries = @doc.deref(encoding[:Differences])
+      return {} unless entries.is_a?(Array)
+
+      code = nil
+      entries.each_with_object({}) do |raw, result|
+        item = @doc.deref(raw)
+        case item
+        when Integer then code = item
+        when Symbol
+          next unless code&.between?(0, 255)
+
+          result[code] = item # a glyph name, matching Metrics::WIN_ANSI_GLYPHS
+          code += 1
+        end
+      end
     end
 
     def base_font_name(dict)

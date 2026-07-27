@@ -16,6 +16,8 @@ module Acrofill
     FIRST_CODE = 32
     LAST_CODE = 255
     WINDOWS_1252 = Encoding::Windows_1252
+    # Encodings whose bytes are already the codes the font is drawn with.
+    BYTE_ENCODINGS = [Encoding::Windows_1252, Encoding::BINARY].freeze
 
     # The standard-14 text cuts, indexed by bold + 2 * italic per family.
     CUTS = {
@@ -158,8 +160,48 @@ module Acrofill
       'Courier-BoldOblique' => [629, -157, 801, -250].freeze
     }.freeze
 
-    # Everything the appearance code needs about one resolved face.
-    Font = Struct.new(:widths, :ascender, :descender, :bbox_top, :bbox_bottom) do
+    # WinAnsiEncoding glyph names, index = code - 32. Used to re-encode a
+    # value for a font whose /Encoding remaps codes: the value is turned
+    # into glyph names, then into the codes *this* font draws them at.
+    WIN_ANSI_GLYPHS = [
+      :space, :exclam, :quotedbl, :numbersign, :dollar, :percent, :ampersand, :quotesingle,
+      :parenleft, :parenright, :asterisk, :plus, :comma, :hyphen, :period, :slash, :zero,
+      :one, :two, :three, :four, :five, :six, :seven, :eight, :nine, :colon, :semicolon,
+      :less, :equal, :greater, :question, :at, :A, :B, :C, :D, :E, :F, :G, :H, :I, :J, :K,
+      :L, :M, :N, :O, :P, :Q, :R, :S, :T, :U, :V, :W, :X, :Y, :Z, :bracketleft, :backslash,
+      :bracketright, :asciicircum, :underscore, :grave, :a, :b, :c, :d, :e, :f, :g, :h, :i,
+      :j, :k, :l, :m, :n, :o, :p, :q, :r, :s, :t, :u, :v, :w, :x, :y, :z, :braceleft, :bar,
+      :braceright, :asciitilde, :controlDEL, :Euro, nil, :quotesinglbase, :florin,
+      :quotedblbase, :ellipsis, :dagger, :daggerdbl, :circumflex, :perthousand, :Scaron,
+      :guilsinglleft, :OE, nil, :Zcaron, nil, nil, :quoteleft, :quoteright, :quotedblleft,
+      :quotedblright, :bullet, :endash, :emdash, :tilde, :trademark, :scaron,
+      :guilsinglright, :oe, nil, :zcaron, :Ydieresis, :space, :exclamdown, :cent, :sterling,
+      :currency, :yen, :brokenbar, :section, :dieresis, :copyright, :ordfeminine,
+      :guillemotleft, :logicalnot, :hyphen, :registered, :macron, :degree, :plusminus,
+      :twosuperior, :threesuperior, :acute, :mu, :paragraph, :periodcentered, :cedilla,
+      :onesuperior, :ordmasculine, :guillemotright, :onequarter, :onehalf, :threequarters,
+      :questiondown, :Agrave, :Aacute, :Acircumflex, :Atilde, :Adieresis, :Aring, :AE,
+      :Ccedilla, :Egrave, :Eacute, :Ecircumflex, :Edieresis, :Igrave, :Iacute, :Icircumflex,
+      :Idieresis, :Eth, :Ntilde, :Ograve, :Oacute, :Ocircumflex, :Otilde, :Odieresis,
+      :multiply, :Oslash, :Ugrave, :Uacute, :Ucircumflex, :Udieresis, :Yacute, :Thorn,
+      :germandbls, :agrave, :aacute, :acircumflex, :atilde, :adieresis, :aring, :ae,
+      :ccedilla, :egrave, :eacute, :ecircumflex, :edieresis, :igrave, :iacute, :icircumflex,
+      :idieresis, :eth, :ntilde, :ograve, :oacute, :ocircumflex, :otilde, :odieresis,
+      :divide, :oslash, :ugrave, :uacute, :ucircumflex, :udieresis, :yacute, :thorn,
+      :ydieresis
+    ].freeze
+
+    # Everything the appearance code needs about one resolved face. +remap+
+    # is a 256-entry code translation table, or nil when the font draws
+    # WinAnsi codes as they are.
+    Font = Struct.new(:widths, :ascender, :descender, :bbox_top, :bbox_bottom, :remap) do
+      # Windows-1252 text as the byte codes this font draws it with.
+      def encode(text)
+        return text unless remap
+
+        text.b.each_byte.map { |code| remap[code] }.pack('C*')
+      end
+
       def ascent(size) = ascender * size / 1000.0
 
       def descent(size) = -descender * size / 1000.0
@@ -225,10 +267,11 @@ module Acrofill
       (BOLD.match?(lower) ? 1 : 0) + (ITALIC.match?(lower) ? 2 : 0)
     end
 
-    # Appearance text is already Windows-1252; anything else is converted so
-    # that measuring and rendering agree byte for byte.
+    # Appearance text is already Windows-1252, or raw font codes after
+    # #encode; anything else is converted so that measuring and rendering
+    # agree byte for byte.
     def self.to_win_ansi(str)
-      return str if str.encoding == WINDOWS_1252
+      return str if BYTE_ENCODINGS.include?(str.encoding)
 
       str.encode(WINDOWS_1252, invalid: :replace, undef: :replace, replace: '?')
     end

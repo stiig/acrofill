@@ -154,6 +154,31 @@ RSpec.describe 'spec-legal edge cases' do
     expect(stamped).to be(true)
   end
 
+  it 'does not stamp widgets a viewer would not display' do
+    # /F bit 2 is Hidden, bit 6 is NoView ("not on screen", PDF 32000
+    # §12.5.3). Flattening bakes the appearance into the page, so a widget
+    # the viewer hides must be dropped rather than made permanently visible.
+    flags = { 'shown' => 4, 'hidden' => 2, 'noview' => 32, 'noprint' => 0 }
+    refs = (0...flags.size).map { |i| "#{5 + i} 0 R" }.join(' ')
+    objects = [
+      '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+      '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+      "<< /Fields [#{refs}] /DA (/Helv 10 Tf 0 g) >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [#{refs}] >>"
+    ]
+    flags.each_with_index do |(name, flag), index|
+      objects << "<< /Type /Annot /Subtype /Widget /FT /Tx /T (#{name}) /F #{flag} " \
+                 "/Rect [10 #{10 + (index * 30)} 300 #{40 + (index * 30)}] /DA (/Helv 10 Tf 0 g) >>"
+    end
+    path = build(objects)
+    Acrofill.fill_form(path, out, flags.keys.to_h { |name| [name, "value-#{name}"] }, flatten: true)
+
+    drawn = PDF::Reader.new(out).pages.first.text
+    expect(drawn).to include('value-shown', 'value-noprint')
+    expect(drawn).not_to include('value-hidden')
+    expect(drawn).not_to include('value-noview')
+  end
+
   it 'drops a stale appearance when a new one cannot be built' do
     stale = 'BT (STALE) Tj ET'
     path = build([

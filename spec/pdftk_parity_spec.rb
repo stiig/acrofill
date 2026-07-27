@@ -27,9 +27,10 @@ RSpec.describe 'pdftk geometry parity' do
   # is spliced into the /DR font dictionary; +descriptor+, when given, is
   # attached as its /FontDescriptor.
   def template(base_font, height: 20, width: 200, extra: '', size: 10,
-               font_extra: '', descriptor: nil, subtype: 'Type1')
+               font_extra: '', descriptor: nil, subtype: 'Type1',
+               encoding: '/WinAnsiEncoding')
     font = "<< /Type /Font /Subtype /#{subtype} /BaseFont /#{base_font} " \
-           "/Encoding /WinAnsiEncoding #{font_extra} " \
+           "/Encoding #{encoding} #{font_extra} " \
            "#{'/FontDescriptor 7 0 R' if descriptor} >>"
     objects = [
       '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
@@ -73,7 +74,10 @@ RSpec.describe 'pdftk geometry parity' do
     leading = 0.0
     lines = []
     until scanner.eos?
-      if scanner.scan(/(#{number}) (#{number}) Td/)
+      if scanner.scan(/1 0 0 1 (#{number}) (#{number}) Tm/)
+        x = scanner[1].to_f
+        y = scanner[2].to_f
+      elsif scanner.scan(/(#{number}) (#{number}) Td/)
         x += scanner[1].to_f
         y += scanner[2].to_f
       elsif scanner.scan(/(#{number}) TL/)
@@ -199,6 +203,74 @@ RSpec.describe 'pdftk geometry parity' do
                                                        font_extra: uniform_widths(1000)),
                          out, { 'f' => 'Hg' })
       expect(baselines.first[1]).to be_within(0.01).of(6.0) # (20 - 8) / 2
+    end
+  end
+
+  describe 'comb fields' do
+    # A comb splits the box into /MaxLen cells and centers one character in
+    # each; /Q chooses which run of cells the value occupies. Every x below
+    # was read from pdftk (200pt box, 10pt Helvetica, so 40pt cells).
+    def comb(value, cells: 5, align: '', width: 200)
+      Acrofill.fill_form(
+        template('Helvetica', width: width, extra: "/Ff #{1 << 24} /MaxLen #{cells} #{align}"),
+        out, { 'f' => value }
+      )
+      baselines.map(&:first)
+    end
+
+    # pdftk prints two decimals, so each cell is compared with the same
+    # 0.01 tolerance used throughout this file.
+    def expect_cells(actual, expected)
+      expect(actual.size).to eq(expected.size)
+      actual.zip(expected).each { |got, want| expect(got).to be_within(0.01).of(want) }
+    end
+
+    it 'centers each character in its own cell' do
+      expect_cells(comb('AB'), [16.66, 56.67])
+      expect_cells(comb('ABCDE'), [16.66, 56.67, 96.39, 136.39, 176.66])
+    end
+
+    it 'scales the cells to /MaxLen' do
+      expect_cells(comb('AB', cells: 4), [21.66, 71.67]) # 50pt cells
+    end
+
+    it 'places the value in the middle cells for /Q 1' do
+      expect_cells(comb('AB', align: '/Q 1'), [56.67, 96.67])
+      expect_cells(comb('ABC', align: '/Q 1'), [56.67, 96.67, 136.39])
+    end
+
+    it 'places the value in the last cells for /Q 2' do
+      expect_cells(comb('AB', align: '/Q 2'), [136.66, 176.66])
+    end
+
+    it 'keeps going past the last cell when the value overflows' do
+      expect(comb('ABCDEFG').size).to eq(7)
+    end
+  end
+
+  describe 'font encoding' do
+    it 'draws the codes the font maps the value to, not the raw bytes' do
+      # /Differences puts glyph Z at code 65 and glyph A at code 90, so the
+      # value "AZ" has to be written as the bytes "ZA" to draw "AZ" —
+      # exactly what pdftk emits.
+      Acrofill.fill_form(
+        template('Helvetica',
+                 encoding: '<< /Type /Encoding /BaseEncoding /WinAnsiEncoding ' \
+                           '/Differences [65 /Z 90 /A] >>'),
+        out, { 'f' => 'AZ' }
+      )
+      expect(stream).to include('(ZA) Tj')
+    end
+
+    it 'leaves the value alone when /Differences match WinAnsi anyway' do
+      # Real templates ship a /Differences array that merely restates the
+      # WinAnsi assignments; that must not perturb anything.
+      Acrofill.fill_form(
+        template('Helvetica',
+                 encoding: '<< /Type /Encoding /Differences [39 /quotesingle 96 /grave] >>'),
+        out, { 'f' => "a'b" }
+      )
+      expect(stream).to include("(a'b) Tj")
     end
   end
 

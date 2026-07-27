@@ -161,6 +161,33 @@ RSpec.describe 'malicious template hardening' do
     end
   end
 
+  it 'ignores a mistyped /Encoding or /MaxLen instead of laying out with it' do
+    [
+      ['/Encoding << /Differences 7 0 R >>', ''],                    # not an array
+      ['/Encoding << /Differences [(a) /A 3.5 /B] >>', ''],          # junk entries
+      ['/Encoding << /Differences [/A /B] >>', ''],                  # no starting code
+      ['/Encoding << /Differences [999 /A] >>', ''],                 # code out of range
+      ['/Encoding [1 2 3]', ''],                                     # not a dictionary
+      ['', "/Ff #{1 << 24}"],                                        # comb without /MaxLen
+      ['', "/Ff #{1 << 24} /MaxLen 0"],                              # zero cells
+      ['', "/Ff #{1 << 24} /MaxLen (five)"],                         # /MaxLen not a number
+      ['', "/Ff #{1 << 24} /MaxLen -3"]                              # negative
+    ].each do |font_entries, widget_entries|
+      path = build([
+                     '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                     '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                     '<< /Fields [5 0 R] /DA (/F1 10 Tf 0 g) /DR << /Font << /F1 6 0 R >> >> >>',
+                     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                     '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [0 0 200 20] ' \
+                     "/DA (/F1 10 Tf 0 g) #{widget_entries} >>",
+                     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica #{font_entries} >>",
+                     '<< /Not /AnArray >>'
+                   ])
+      expect { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), { 'x' => 'hi' }) }
+        .not_to raise_error, "raised for #{font_entries} #{widget_entries}"
+    end
+  end
+
   it 'reads only the emittable slice of an enormous /Widths array' do
     # A declared range of a million glyphs must not cost a million steps.
     widths = "[#{Array.new(20_000, 500).join(' ')}]"

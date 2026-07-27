@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+### Added
+
+- Comb fields (`/Ff` bit 25 with `/MaxLen`) lay each character out centered
+  in its own cell, `/Q` choosing which run of cells the value occupies,
+  matching pdftk cell for cell. They previously rendered as plain text.
+
+### Fixed
+
+- A value is now written in the codes its font actually draws it with. A
+  `/DR` font whose `/Encoding` carries a `/Differences` array moves glyphs
+  to other codes; writing the raw bytes drew whatever glyph happened to sit
+  there — a font mapping "A" to code 90 rendered "AZ" as "ZA". Widths
+  follow the emitted code, so measurement and rendering stay in step.
+
+### Changed
+
+- Flattening no longer stamps widgets a viewer would not display: `/F`
+  Hidden (bit 2) was already dropped, and NoView (bit 6, "not on screen",
+  PDF 32000 §12.5.3) now is too. pdftk stamps both, but burning in a
+  widget the template author concealed makes hidden values permanently
+  visible, so parity loses here. Widgets that are merely non-printing are
+  still stamped: they are what the viewer shows.
+
 ## [0.3.0] - 2026-07-27
 
 ### Fixed
@@ -142,7 +167,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PdfForms`-compatible entry points (`Acrofill.new`, `fill_form`, `fields`,
   `field_names`).
 
-[Unreleased]: https://github.com/stiig/acrofill/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/stiig/acrofill/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/stiig/acrofill/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/stiig/acrofill/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/stiig/acrofill/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/stiig/acrofill/compare/v0.1.1...v0.1.2

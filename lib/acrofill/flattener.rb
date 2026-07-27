@@ -6,6 +6,8 @@ module Acrofill
   # comes from the template, so each one is validated before use.
   class Flattener
     HIDDEN_FLAG = 2
+    NOVIEW_FLAG = 32
+    INVISIBLE = HIDDEN_FLAG | NOVIEW_FLAG
 
     def initialize(doc)
       @doc = doc
@@ -61,7 +63,12 @@ module Acrofill
     # form's /Matrix is applied to its BBox, and the resulting extent is
     # mapped onto the annotation rectangle.
     def stamp_operations(page, widget)
-      return nil if annotation_flags(widget).anybits?(HIDDEN_FLAG)
+      # Flattening produces the document as it is displayed, so a widget the
+      # viewer would not show is dropped rather than burned in: /F Hidden,
+      # and NoView, which means "not on screen" (PDF 32000 §12.5.3). pdftk
+      # stamps both, but stamping Hidden makes values the template author
+      # concealed permanently visible, so parity loses here.
+      return nil if annotation_flags(widget).anybits?(INVISIBLE)
 
       ap_ref = normal_appearance(widget)
       xobject = @doc.deref(ap_ref)

@@ -91,11 +91,16 @@ your own templates with:
 ruby benchmark/geometry_diff.rb path/to/form.pdf
 ```
 
-Three differences are deliberate: acrofill shrinks an overlong value to fit
-where pdftk clips it, it writes Windows-1252 for non-ASCII values where
-pdftk emits UTF-8 bytes into a WinAnsi font (which renders as mojibake), and
-it caps auto-sized (`0 Tf`) text at 12pt where pdftk scales it to fill the
-box. See the changelog for the measured numbers.
+Flattened output was checked the same way: on those four forms every
+stamped fragment lands where pdftk stamps it, bar the fields covered by the
+deliberate differences below.
+
+Four differences are deliberate: acrofill shrinks an overlong value to fit
+where pdftk clips it; it writes Windows-1252 for non-ASCII values where
+pdftk emits UTF-8 bytes into a WinAnsi font (which renders as mojibake); it
+caps auto-sized (`0 Tf`) text at 12pt where pdftk scales it to fill the box;
+and it drops widgets flagged Hidden or NoView when flattening instead of
+burning them into the page. See the changelog for the measured numbers.
 
 ## Performance
 
@@ -194,6 +199,7 @@ Supported:
   rather than all measured as Helvetica.
 - Checkboxes and radio groups (`/Btn`) — state selection via `/V`+`/AS`
   using the template's own appearance states.
+- Comb fields (`/Ff` bit 25) — one character centered per `/MaxLen` cell.
 - Choice fields (`/Ch`) — value set and rendered like text.
 - Flattening — every visible widget appearance is stamped into the page
   content; widget annotations and the AcroForm dictionary are removed.
@@ -204,8 +210,7 @@ Not supported (rejected or ignored, never a hard crash):
 
 - Encrypted documents (raise `Acrofill::Error`), XFA forms, digital
   signatures, JavaScript actions.
-- Push buttons; comb fields render as plain text; rich text (`/RV`) is
-  dropped on fill.
+- Push buttons; rich text (`/RV`) is dropped on fill.
 - Glyphs outside Windows-1252 in generated appearances (stored values
   keep full Unicode; unrenderable glyphs appear as `?`).
 

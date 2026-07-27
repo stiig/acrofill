@@ -6,6 +6,7 @@ module Acrofill
   class Form
     MULTILINE_FLAG = 1 << 12
     PUSHBUTTON_FLAG = 1 << 16
+    COMB_FLAG = 1 << 24
 
     Field = Struct.new(:name, :type, :value, :states, keyword_init: true)
 
@@ -81,15 +82,23 @@ module Acrofill
       true
     end
 
+    def build_appearance(node, widget, value, multiline, comb)
+      return nil if value.empty?
+
+      @appearance.build(node, widget, value, multiline: multiline, comb: comb)
+    end
+
     def fill_text(group, value)
       node = group[:node]
       node[:V] = pdf_text_string(value)
       node.delete(:RV)
       node.delete(:I)
-      multiline = field_flags(node).anybits?(MULTILINE_FLAG)
+      flags = field_flags(node)
+      multiline = flags.anybits?(MULTILINE_FLAG)
+      comb = comb_cells(node, flags, multiline)
       group[:widgets].each do |widget|
         widget.delete(:AS)
-        ap_ref = @appearance.build(node, widget, value, multiline: multiline) unless value.empty?
+        ap_ref = build_appearance(node, widget, value, multiline, comb)
         # An unusable geometry yields no appearance; dropping /AP is still
         # required, or the widget would keep rendering the *previous* value
         # while /V already holds the new one.
@@ -100,6 +109,16 @@ module Acrofill
         end
       end
       true
+    end
+
+    # How many cells a comb field lays its value out in, or nil when the
+    # field is not a comb. The flag only means anything alongside /MaxLen
+    # and on a single-line field (PDF 32000 §12.7.4.3).
+    def comb_cells(node, flags, multiline)
+      return nil if multiline || !flags.anybits?(COMB_FLAG)
+
+      cells = @doc.deref(@doc.inherited_value(node, :MaxLen))
+      cells.is_a?(Integer) && cells.positive? ? cells : nil
     end
 
     # Checkboxes and radio groups carry per-state appearance streams, so
