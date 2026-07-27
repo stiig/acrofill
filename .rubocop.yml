@@ -25,6 +25,8 @@ Metrics/AbcSize:
 
 Metrics/ParameterLists:
   Max: 6
+  Exclude:
+    - 'spec/**/*' # fixture builders legitimately take many knobs
 
 # Command methods (fill/fill_text/fill_button) return a success boolean but
 # are not predicates; the ? suffix would be misleading.

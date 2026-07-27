@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-27
+
+### Fixed
+
+- Single-line baselines now match pdftk when the text is taller than the
+  field, which real forms hit routinely (a 12pt `/DA` in a 10.8pt-high box
+  is common). Centering is bounded on both sides: the ascender is kept
+  inside the box and the baseline never drops below the box floor. This was
+  the last geometry difference on a 551-field sample of real templates.
+- Text is now measured with the metrics of the font it is actually drawn
+  with. A template that embeds its own face declares `/Widths` and a
+  `/FontDescriptor`, and those were ignored in favour of standard-14
+  tables — which put centered and right-aligned values as much as tens of
+  points away from where pdftk puts them (43pt on a 300pt-wide field in
+  one measured case). `/Widths` now drives glyph widths, `/FontDescriptor`
+  `/Ascent` the baseline and its `/FontBBox` the multiline row spacing,
+  falling back to the standard-14 tables only when the dictionary is
+  silent. This is the layout most real-world forms hit, since almost all
+  of them embed a subset face.
+
+### Changed
+
+- Vertical geometry is now font-aware and matches pdftk-java 3.3.3 exactly.
+  Baselines are placed from the font's own AFM ascender instead of a fixed
+  Helvetica value (Times sat 0.18pt low, Courier 0.45pt), and multiline rows
+  are spaced by the font's `FontBBox` extent with pdftk's 1pt top offset
+  instead of a flat `1.15 * size` leading.
+- `Acrofill::Metrics` exposes `.font_for`, returning widths plus ascender,
+  descender and `FontBBox` for one of the twelve standard-14 text cuts.
+  Vertical metrics are stored per cut, since Courier-Bold and Times-Italic
+  differ there even where their widths do not.
+- Font resolution moved out of `Appearance` into `Acrofill::Fonts`, which
+  owns the `/DR /Font` dictionary: metrics for a `/DA` resource name and
+  the reference a generated appearance points at.
+
+### Added
+
+- `benchmark/geometry_diff.rb` compares acrofill's appearance streams with
+  pdftk's field by field on your own templates.
+- `spec/pdftk_parity_spec.rb` pins alignment, baseline and multiline row
+  geometry — for standard-14 faces, template-supplied metrics, and text
+  taller than its field — to numbers measured from pdftk's own output.
+
+### Known differences from pdftk
+
+- Auto-sized fields (`0 Tf`): pdftk picks a font-dependent size that fills
+  the box (16.33pt in a 20pt box for Helvetica, and 20.73pt — taller than
+  the box — for Courier), with a hard 4pt floor. Acrofill keeps its own
+  `min(height * 0.66, 12pt)` and is not going to reproduce that.
+- Values too wide for the field: acrofill shrinks the font to fit, pdftk
+  keeps the size and clips.
+- Non-ASCII values: pdftk writes UTF-8 bytes into a `/WinAnsiEncoding`
+  font, which renders as mojibake; acrofill writes Windows-1252, so the
+  text is correct and the measured width differs accordingly.
+
 ## [0.2.0] - 2026-07-27
 
 ### Fixed
@@ -87,7 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PdfForms`-compatible entry points (`Acrofill.new`, `fill_form`, `fields`,
   `field_names`).
 
-[Unreleased]: https://github.com/stiig/acrofill/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/stiig/acrofill/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/stiig/acrofill/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/stiig/acrofill/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/stiig/acrofill/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/stiig/acrofill/compare/v0.1.0...v0.1.1

@@ -6,9 +6,10 @@ module Acrofill
   # Windows-1252 bytes against a /WinAnsiEncoding font, so the byte emitted
   # is the byte measured). Extracted from Adobe AFM metrics.
   #
-  # Only six tables are stored: the oblique cuts of Helvetica have the same
-  # widths as the upright face, and the whole Courier family is monospaced.
-  # #widths_for maps every other BaseFont name onto them.
+  # Only six width tables are stored: the oblique cuts of Helvetica have the
+  # same widths as the upright face, and the whole Courier family is
+  # monospaced. Vertical metrics (ascender, descender, FontBBox extent) are
+  # per cut, since they differ where widths do not.
   module Metrics
     DEFAULT_WIDTH = 556
     COURIER_WIDTH = 600
@@ -16,8 +17,12 @@ module Acrofill
     LAST_CODE = 255
     WINDOWS_1252 = Encoding::Windows_1252
 
-    # Bold/italic Times cuts, indexed by bold + 2 * italic.
-    TIMES = %w[Times-Roman Times-Bold Times-Italic Times-BoldItalic].freeze
+    # The standard-14 text cuts, indexed by bold + 2 * italic per family.
+    CUTS = {
+      helvetica: %w[Helvetica Helvetica-Bold Helvetica-Oblique Helvetica-BoldOblique].freeze,
+      times: %w[Times-Roman Times-Bold Times-Italic Times-BoldItalic].freeze,
+      courier: %w[Courier Courier-Bold Courier-Oblique Courier-BoldOblique].freeze
+    }.freeze
     # Family and weight hints for BaseFont names outside the standard 14.
     SERIF = /times|roman|serif|georgia|garamond/
     SANS = /sans/
@@ -25,7 +30,7 @@ module Acrofill
     BOLD = /bold|black|heavy/
     ITALIC = /italic|oblique/
 
-    WIDTHS = {
+    TABLES = {
       'Helvetica' => [
         278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556,
         556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667,
@@ -125,6 +130,50 @@ module Acrofill
       'Courier' => Array.new(LAST_CODE - FIRST_CODE + 1, COURIER_WIDTH).freeze
     }.freeze
 
+    # Cuts that share a width table with another cut.
+    WIDTHS = TABLES.merge(
+      'Helvetica-Oblique' => TABLES['Helvetica'],
+      'Helvetica-BoldOblique' => TABLES['Helvetica-Bold'],
+      'Courier-Bold' => TABLES['Courier'],
+      'Courier-Oblique' => TABLES['Courier'],
+      'Courier-BoldOblique' => TABLES['Courier']
+    ).freeze
+
+    # [ascender, descender, FontBBox top, FontBBox bottom] in 1/1000 em,
+    # from the same Adobe AFM data as the widths. pdftk places baselines
+    # from the ascender and spaces multiline rows by the FontBBox extent,
+    # so these drive vertical geometry.
+    VERTICAL = {
+      'Helvetica' => [718, -207, 931, -225].freeze,
+      'Helvetica-Bold' => [718, -207, 962, -228].freeze,
+      'Helvetica-Oblique' => [718, -207, 931, -225].freeze,
+      'Helvetica-BoldOblique' => [718, -207, 962, -228].freeze,
+      'Times-Roman' => [683, -217, 898, -218].freeze,
+      'Times-Bold' => [683, -217, 935, -218].freeze,
+      'Times-Italic' => [683, -217, 883, -217].freeze,
+      'Times-BoldItalic' => [683, -217, 921, -218].freeze,
+      'Courier' => [629, -157, 805, -250].freeze,
+      'Courier-Bold' => [629, -157, 801, -250].freeze,
+      'Courier-Oblique' => [629, -157, 805, -250].freeze,
+      'Courier-BoldOblique' => [629, -157, 801, -250].freeze
+    }.freeze
+
+    # Everything the appearance code needs about one resolved face.
+    Font = Struct.new(:widths, :ascender, :descender, :bbox_top, :bbox_bottom) do
+      def ascent(size) = ascender * size / 1000.0
+
+      def descent(size) = -descender * size / 1000.0
+
+      # Distance from the box top to the first baseline, and between rows.
+      def top(size) = bbox_top * size / 1000.0
+
+      def line_height(size) = (bbox_top - bbox_bottom) * size / 1000.0
+    end
+
+    FONTS = VERTICAL.to_h do |name, (asc, desc, top, bottom)|
+      [name, Font.new(WIDTHS[name], asc, desc, top, bottom).freeze]
+    end.freeze
+
     # Width of +str+ at +size+ points. +widths+ is a table from #widths_for,
     # or a BaseFont name (resolved here, at the cost of the lookup).
     def self.string_width(str, widths, size)
@@ -136,19 +185,36 @@ module Acrofill
       units * size / 1000.0
     end
 
-    # The width table for a BaseFont name. Standard-14 names hit the table
-    # directly; anything else (ArialMT, TimesNewRomanPS-BoldMT, a template's
-    # embedded face) is classified by family and weight, which is far closer
-    # than measuring everything as Helvetica.
+    # Metrics for a BaseFont name. Standard-14 names resolve directly;
+    # anything else (ArialMT, TimesNewRomanPS-BoldMT, a template's embedded
+    # face) is classified by family and weight, which is far closer than
+    # treating everything as Helvetica.
+    def self.font_for(base_font)
+      FONTS.fetch(canonical_name(base_font))
+    end
+
     def self.widths_for(base_font)
+      font_for(base_font).widths
+    end
+
+    # Metrics for a name that *is* one of the standard 14, or nil. Unlike
+    # #font_for this does not classify: a template's own face only inherits
+    # standard-14 vertical metrics when it actually names one.
+    def self.standard_font(base_font)
+      FONTS[base_font.to_s]
+    end
+
+    # Maps any BaseFont name onto one of the twelve standard-14 text cuts.
+    def self.canonical_name(base_font)
       name = base_font.to_s
-      return WIDTHS[name] if WIDTHS.key?(name)
+      return name if FONTS.key?(name)
 
       lower = name.downcase
-      return WIDTHS['Courier'] if FIXED.match?(lower)
-      return WIDTHS[TIMES[weight_index(lower)]] if serif?(lower)
-
-      WIDTHS[BOLD.match?(lower) ? 'Helvetica-Bold' : 'Helvetica']
+      family = if FIXED.match?(lower) then :courier
+               elsif serif?(lower) then :times
+               else :helvetica
+               end
+      CUTS[family][weight_index(lower)]
     end
 
     def self.serif?(lower)

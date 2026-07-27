@@ -5,14 +5,15 @@ module Acrofill
   # text-field widget, honouring the field's /DA string and /Q alignment.
   class Appearance
     PADDING = 2.0
-    ASCENT = 0.718 # Helvetica cap-height-ish ascent, em fractions
-    DESCENT = 0.207
+    # pdftk offsets the first multiline row by 1pt from the box top.
+    TOP_OFFSET = 1.0
     # Colour-setting operators allowed in a /DA string, and their operand counts.
     COLOR_OP_ARITY = { 'g' => 1, 'rg' => 3, 'k' => 4 }.freeze
 
     def initialize(doc, acroform)
       @doc = doc
       @acroform = acroform
+      @fonts = Fonts.new(doc, acroform)
     end
 
     # Returns a Reference to the new appearance XObject, or nil when the
@@ -26,22 +27,19 @@ module Acrofill
       return nil if width <= 0 || height <= 0
 
       font_name, size, color_ops = parse_da(field_node)
-      widths = Metrics.widths_for(base_font_for(font_name))
+      font = @fonts.metrics(font_name)
       align = alignment(field_node)
 
       body =
         if multiline
           size = 12.0 if size <= 0
           size = size.clamp(2.0, 144.0)
-          multiline_body(value, widths, size, width, height, align)
+          multiline_body(value, font, size, width, height, align)
         else
           text = printable_text(value)
           size = [height * 0.66, 12.0].min if size.zero?
-          size = shrink_to_fit(text, widths, size, width)
-          # Vertically center the ascent box, matching pdftk's baseline
-          # placement exactly: ty = (h - ascent*size) / 2.
-          ty = [(height - (size * ASCENT)) / 2.0, size * DESCENT].max
-          "#{fmt(line_x(text, widths, size, width, align))} #{fmt(ty)} Td\n" \
+          size = shrink_to_fit(text, font, size, width)
+          "#{fmt(line_x(text, font, size, width, align))} #{fmt(baseline(height, font, size))} Td\n" \
             "(#{escape_literal(text)}) Tj\n"
         end
 
@@ -56,7 +54,7 @@ module Acrofill
         Subtype: :Form,
         FormType: 1,
         BBox: [0, 0, width, height],
-        Resources: { Font: { font_name.to_sym => font_ref(font_name) } }
+        Resources: { Font: { font_name.to_sym => @fonts.reference(font_name) } }
       }
       @doc.add(StreamObject.new(dict, content.b))
     end
@@ -67,14 +65,27 @@ module Acrofill
       Serializer.format_number(num.to_f)
     end
 
+    # Where pdftk puts a single line's baseline: the ascent box centered in
+    # the field, but never so low that the descender leaves the box, never so
+    # high that the ascender does, and never below the box floor. The last
+    # two only bind when the text is taller than the field it sits in, which
+    # real forms do hit — a 12pt /DA in a 10.8pt-high field is common.
+    def baseline(height, font, size)
+      ascent = font.ascent(size)
+      highest = height - ascent # baseline putting the ascender at the box top
+      return 0.0 if highest <= 0 # the glyphs are taller than the box
+
+      [highest / 2.0, font.descent(size)].max.clamp(0.0, highest)
+    end
+
     # /Q (0 left, 1 center, 2 right), inheritable and possibly indirect.
     def alignment(field_node)
       align = @doc.deref(@doc.inherited_value(field_node, :Q) || @acroform[:Q])
       align.is_a?(Integer) ? align : 0
     end
 
-    def line_x(text, widths, size, width, align)
-      text_width = Metrics.string_width(text, widths, size)
+    def line_x(text, font, size, width, align)
+      text_width = Metrics.string_width(text, font.widths, size)
       case align
       when 1 then [(width - text_width) / 2.0, PADDING].max
       when 2 then [width - PADDING - text_width, PADDING].max
@@ -84,18 +95,20 @@ module Acrofill
 
     # Greedy word wrap, top-down, honouring explicit line breaks. Lines
     # that would fall below the box are clipped by the BBox.
-    def multiline_body(value, widths, size, width, height, align)
+    def multiline_body(value, font, size, width, height, align)
       max_width = width - (2 * PADDING)
       lines = value.to_s.split(/\r\n|[\r\n]/).flat_map do |paragraph|
-        wrap_line(printable_text(paragraph), widths, size, max_width)
+        wrap_line(printable_text(paragraph), font, size, max_width)
       end
 
-      leading = size * 1.15
-      first_y = height - PADDING - (size * ASCENT)
+      # pdftk spaces rows by the font's FontBBox extent and drops the first
+      # baseline by that extent from the top of the box.
+      leading = font.line_height(size)
+      first_y = height - font.top(size) + TOP_OFFSET
       body = "#{fmt(leading)} TL\n"
       previous_x = 0.0
       lines.each_with_index do |line, index|
-        x = line_x(line, widths, size, width, align)
+        x = line_x(line, font, size, width, align)
         body << "#{fmt(x - previous_x)} #{index.zero? ? fmt(first_y) : '0'} Td\n"
         body << "(#{escape_literal(line)}) Tj\nT*\n"
         previous_x = x
@@ -105,12 +118,12 @@ module Acrofill
 
     # Greedy wrap. Line and space widths are accumulated incrementally so
     # the cost is O(total characters), not O(words * line-length).
-    def wrap_line(text, widths, size, max_width)
-      space = Metrics.string_width(' ', widths, size)
+    def wrap_line(text, font, size, max_width)
+      space = Metrics.string_width(' ', font.widths, size)
       lines = ['']
       so_far = [0.0]
       text.split.each do |word|
-        word_width = Metrics.string_width(word, widths, size)
+        word_width = Metrics.string_width(word, font.widths, size)
         if lines.last.empty?
           lines[-1] = word
           so_far[-1] = word_width
@@ -182,40 +195,11 @@ module Acrofill
 
     # Fixed sizes that overflow the box are scaled down so the whole value
     # stays visible (Acrobat-style best-fit; pdftk would clip instead).
-    def shrink_to_fit(text, widths, size, width)
+    def shrink_to_fit(text, font, size, width)
       max_width = width - (2 * PADDING)
-      text_width = Metrics.string_width(text, widths, size)
+      text_width = Metrics.string_width(text, font.widths, size)
       size *= max_width / text_width if text_width > max_width && text_width.positive?
       size.clamp(2.0, 144.0)
-    end
-
-    # The font resource dictionary from /AcroForm /DR /Font, or {} when the
-    # template supplies a malformed (non-dictionary) /DR or /Font.
-    def dr_fonts
-      @dr_fonts ||=
-        begin
-          dr = @doc.deref(@acroform[:DR])
-          fonts = dr.is_a?(Hash) ? @doc.deref(dr[:Font]) : nil
-          fonts.is_a?(Hash) ? fonts : {}
-        end
-    end
-
-    def base_font_for(resource_name)
-      font = @doc.deref(dr_fonts[resource_name.to_sym])
-      base = font.is_a?(Hash) ? @doc.deref(font[:BaseFont]).to_s : ''
-      base.sub(/\A[A-Z]{6}\+/, '') # drop the subset prefix (ABCDEF+Arial)
-    end
-
-    def font_ref(resource_name)
-      entry = dr_fonts[resource_name.to_sym]
-      entry ? @doc.ref_for(entry) : fallback_font
-    end
-
-    # Font not present in /DR: register one plain Helvetica and share it
-    # across every appearance built from this form.
-    def fallback_font
-      @fallback_font ||=
-        @doc.add(Type: :Font, Subtype: :Type1, BaseFont: :Helvetica, Encoding: :WinAnsiEncoding)
     end
 
     def printable_text(value)

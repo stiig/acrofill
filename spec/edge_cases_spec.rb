@@ -111,6 +111,30 @@ RSpec.describe 'spec-legal edge cases' do
     expect(field[:V]).to be_nil
   end
 
+  it 'derefs an indirect /Widths array and its indirect entries' do
+    # Widths are frequently stored as a separate object, and any entry may
+    # itself be indirect (PDF 32000 §7.3.10).
+    entries = (Array.new(45, '500') + ['7 0 R'] + Array.new(49, '500')).join(' ')
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/F1 10 Tf 0 g) /DR << /Font << /F1 6 0 R >> >> >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [0 0 300 20] /Q 2 ' \
+                   '/DA (/F1 10 Tf 0 g) >>',
+                   '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /Widths 8 0 R >>',
+                   '1000', # the width of code 77 ("M"), reached indirectly
+                   "[#{entries}]"
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'MM' })
+
+    # Right-aligned: 300 - 2 - 2 * 10pt, the indirect 1000 honoured. A failed
+    # deref would leave the entry at zero width (298) and the neighbouring
+    # direct 500 would give 288, so this pins the indirect read.
+    x = appearance_data(out, 'MM')[/^([\d.]+) [\d.-]+ Td/, 1].to_f
+    expect(x).to be_within(0.01).of(278.0)
+  end
+
   it 'flattens page nodes whose /Type entry is missing' do
     # /Type is required on page-tree nodes but plenty of generators omit it;
     # skipping those pages would silently flatten nothing.
@@ -150,6 +174,26 @@ RSpec.describe 'spec-legal edge cases' do
     expect(field[:AP]).to be_nil # not the appearance still showing "old"
     expect(objects.values.any? { |o| o.is_a?(PDF::Reader::Stream) && o.data.include?('STALE') })
       .to be(false)
+  end
+
+  it 'promotes a direct /DR font dictionary to one shared indirect object' do
+    refs = (0...4).map { |i| "#{5 + i} 0 R" }.join(' ')
+    objects = [
+      '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+      '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+      "<< /Fields [#{refs}] /DA (/F1 10 Tf 0 g) /DR << /Font << /F1 " \
+      '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >> >> >>',
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [#{refs}] >>"
+    ]
+    4.times do |i|
+      objects << "<< /Type /Annot /Subtype /Widget /FT /Tx /T (f#{i}) " \
+                 "/Rect [10 #{10 + (i * 30)} 200 #{40 + (i * 30)}] /DA (/F1 10 Tf 0 g) >>"
+    end
+    path = build(objects)
+    Acrofill.fill_form(path, out, (0...4).to_h { |i| ["f#{i}", "value #{i}"] })
+
+    fonts = PDF::Reader::ObjectHash.new(out).values.count { |o| o.is_a?(Hash) && o[:Type] == :Font }
+    expect(fonts).to eq(1)
   end
 
   it 'registers one shared fallback font for every generated appearance' do

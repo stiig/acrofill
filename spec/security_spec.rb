@@ -132,6 +132,51 @@ RSpec.describe 'malicious template hardening' do
       .not_to raise_error
   end
 
+  it 'ignores mistyped font metrics instead of laying out against them' do
+    # /Widths, /FirstChar and /FontDescriptor all come from the template, so
+    # each is validated before it reaches the geometry.
+    [
+      '/FirstChar 32 /Widths 7 0 R',                    # not an array
+      '/FirstChar (x) /Widths [500 500]',               # /FirstChar not an integer
+      '/Widths [500 500]',                              # no /FirstChar
+      '/FirstChar 32 /Widths []',                       # empty
+      '/FirstChar 32 /Widths [(a) (b) null]',           # non-numeric entries
+      "/FirstChar 32 /Widths [1#{'0' * 400}.0 500]",    # non-finite
+      '/FontDescriptor [1 2 3]',                        # not a dictionary
+      '/FontDescriptor << /Ascent (tall) /FontBBox [1 2] >>',
+      "/FontDescriptor << /Ascent 1#{'0' * 400}.0 >>"   # non-finite ascent
+    ].each do |font_entries|
+      path = build([
+                     '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                     '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                     '<< /Fields [5 0 R] /DA (/F1 10 Tf 0 g) /DR << /Font << /F1 6 0 R >> >> >>',
+                     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                     '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [0 0 200 20] /Q 1 ' \
+                     '/DA (/F1 10 Tf 0 g) >>',
+                     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica #{font_entries} >>",
+                     '<< /Not /AnArray >>'
+                   ])
+      expect { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), { 'x' => 'hi' }) }
+        .not_to raise_error, "raised for #{font_entries}"
+    end
+  end
+
+  it 'reads only the emittable slice of an enormous /Widths array' do
+    # A declared range of a million glyphs must not cost a million steps.
+    widths = "[#{Array.new(20_000, 500).join(' ')}]"
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/F1 10 Tf 0 g) /DR << /Font << /F1 6 0 R >> >> >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [0 0 200 20] ' \
+                   '/DA (/F1 10 Tf 0 g) >>',
+                   "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /Widths #{widths} >>"
+                 ])
+    expect { within_budget { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), { 'x' => 'hi' }) } }
+      .not_to raise_error
+  end
+
   it 'replaces a mistyped /Resources dictionary instead of indexing it' do
     # Indexing an Array with a Symbol raises TypeError; the flatten path
     # must treat a non-dictionary /Resources as absent.

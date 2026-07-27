@@ -75,6 +75,28 @@ filler.fill_form(tpl, out, data, flatten: true)
 
 Unknown field names are silently ignored, matching pdftk.
 
+### Geometry parity
+
+Filled text lands where pdftk puts it: across four real-world
+government claim forms — 551 filled widgets — every appearance agrees with
+pdftk-java 3.3.3 to the two decimals it prints, except where acrofill
+deliberately differs (below). `spec/pdftk_parity_spec.rb` pins that
+placement against numbers read out of pdftk's own appearance streams —
+alignment, baselines for Helvetica/Times/Courier across box heights, text
+taller than its field, multiline row spacing, and the widths, ascent and
+`FontBBox` a template's own font dictionary supplies. Check it against
+your own templates with:
+
+```bash
+ruby benchmark/geometry_diff.rb path/to/form.pdf
+```
+
+Three differences are deliberate: acrofill shrinks an overlong value to fit
+where pdftk clips it, it writes Windows-1252 for non-ASCII values where
+pdftk emits UTF-8 bytes into a WinAnsi font (which renders as mojibake), and
+it caps auto-sized (`0 Tf`) text at 12pt where pdftk scales it to fill the
+box. See the changelog for the measured numbers.
+
 ## Performance
 
 Because Acrofill runs in-process, it avoids the JVM (or C++ process)
@@ -163,11 +185,13 @@ Supported:
 - Text fields (`/Tx`) — hierarchical names (`parent.kid`), inherited
   `/DA`, alignment via `/Q` (left/center/right), auto font size (`0 Tf`),
   shrink-to-fit for overflowing values, multiline fields (`/Ff` bit 13)
-  with word wrapping, and WinAnsi width metrics for all standard-14 text
-  cuts (Helvetica/Times/Courier, regular through bold-italic). A
-  template's own `/BaseFont` — `ArialMT`, `TimesNewRomanPS-BoldMT`, an
-  embedded subset — is classified by family and weight rather than all
-  measured as Helvetica.
+  with word wrapping, and text measured with the metrics of the font it is
+  drawn with: a template's own `/Widths` and `/FontDescriptor` when the
+  face carries them (as embedded subsets do), otherwise WinAnsi tables for
+  all standard-14 cuts — widths, ascender and `FontBBox`, so baselines and
+  row spacing follow the actual face. A `/BaseFont` naming no standard cut
+  (`ArialMT`, `TimesNewRomanPS-BoldMT`) is classified by family and weight
+  rather than all measured as Helvetica.
 - Checkboxes and radio groups (`/Btn`) — state selection via `/V`+`/AS`
   using the template's own appearance states.
 - Choice fields (`/Ch`) — value set and rendered like text.
