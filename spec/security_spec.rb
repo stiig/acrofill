@@ -22,6 +22,14 @@ RSpec.describe 'malicious template hardening' do
     Timeout.timeout(10, &block)
   end
 
+  # The text every generated appearance stream draws, so a spec can tell
+  # "no appearance was built" from "one was built against nonsense".
+  def drawn_values(path)
+    PDF::Reader.new(path).objects.filter_map do |_ref, obj|
+      obj.data[/\((.*)\) Tj/, 1] if obj.is_a?(PDF::Reader::Stream)
+    end
+  end
+
   it 'terminates on a self-referential /Pages tree (cycle)' do
     # obj2 is a Pages node whose Kids point back to itself.
     path = build([
@@ -186,6 +194,70 @@ RSpec.describe 'malicious template hardening' do
       expect { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), { 'x' => 'hi' }) }
         .not_to raise_error, "raised for #{font_entries} #{widget_entries}"
     end
+  end
+
+  # Geometry arrives as template numbers too, and an unusable one has to be
+  # refused outright: a NaN or infinite extent passes every `<= 0` guard, so
+  # it reaches the layout and either raises or silently lays the value out
+  # against nonsense. Either way the widget must end up with no /AP, which
+  # is the same degrade an unusable /Rect has always taken.
+  it 'refuses unusable widget geometry instead of laying out against it' do
+    infinite = "1#{'0' * 400}.0" # parsed as Float::INFINITY by pdf-reader
+    enormous = "1#{'0' * 308}"   # finite, but the extent overflows
+    [
+      "[0 #{infinite} 200 #{infinite}]",              # non-finite corner
+      "[#{infinite} 0 #{infinite} 20]",               # non-finite corner, x
+      "[-#{enormous} -#{enormous} #{enormous} #{enormous}]" # extent overflows
+    ].each do |rect|
+      path = build([
+                     '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                     '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                     '<< /Fields [5 0 R] >>',
+                     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                     '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Q 1 ' \
+                     "/Rect #{rect} /DA (/Helv 10 Tf 0 g) >>"
+                   ])
+      out = File.join(@dir, 'o.pdf')
+      expect { Acrofill.fill_form(path, out, { 'x' => 'hello' }) }
+        .not_to raise_error, "raised for /Rect #{rect}"
+      expect(drawn_values(out)).to be_empty, "laid out against /Rect #{rect}"
+    end
+  end
+
+  it 'refuses a non-finite /DA point size instead of measuring with it' do
+    # String#to_f happily yields Infinity, and every width it scales then
+    # collapses to a NaN that no clamp can recover from.
+    ["/Helv 1#{'0' * 400} Tf 0 g", "/Helv 1#{'0' * 307} Tf 0 g"].each do |da|
+      path = build([
+                     '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                     '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                     '<< /Fields [5 0 R] >>',
+                     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                     '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) ' \
+                     "/Rect [10 10 210 40] /DA (#{da}) >>"
+                   ])
+      out = File.join(@dir, 'o.pdf')
+      expect { Acrofill.fill_form(path, out, { 'x' => 'hello world' }) }
+        .not_to raise_error, "raised for /DA (#{da})"
+      expect(drawn_values(out)).not_to be_empty, "dropped the value for /DA (#{da})"
+    end
+  end
+
+  it 'treats a non-finite /Matrix on an appearance as the identity' do
+    # The corners are fine here; it is the matrix they are pushed through
+    # that overflows, and Array#min raises on the NaN that falls out.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Btn /T (b) /Rect [0 0 20 20] /AS /Yes ' \
+                   '/AP << /N << /Yes 6 0 R >> >> >>',
+                   "<< /BBox [0 0 20 20] /Matrix [1#{'0' * 400} 0 0 1 0 0] /Length 0 >>\n" \
+                   "stream\nendstream"
+                 ])
+    expect { Acrofill.fill_form(path, File.join(@dir, 'o.pdf'), {}, flatten: true) }
+      .not_to raise_error
   end
 
   it 'reads only the emittable slice of an enormous /Widths array' do

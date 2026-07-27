@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A `/Rect` or `/BBox` whose corners are not four finite numbers, or whose
+  width or height overflows, is now refused as unusable geometry (no
+  appearance, `/AP` dropped) rather than laid out against. Subtracting two
+  infinite corners produced a NaN extent that every `<= 0` guard silently
+  passed, so the widget either raised `ArgumentError` out of
+  `Acrofill.fill_form` or was drawn into a box that serialized to
+  `[0 0 0 0]` — blank, while `/V` already held the new value.
+- A non-finite `/Matrix` on an appearance stream is treated as the identity,
+  the way a missing or otherwise malformed one already was. Flattening a
+  widget whose form XObject carried one raised `ArgumentError`.
+- A non-finite point size in a `/DA` string degrades to "fit the box", the
+  way a `/DA` with no size already does, rather than raising. A finite but
+  enormous one no longer overflows while being scaled down to fit.
+
+### Changed
+
+- `Acrofill::Metrics` exposes `.remap_for` (the `/Differences` code table)
+  and `Metrics::Font#width_of`; `Acrofill::Document` exposes
+  `#normalized_box`. These replace private copies that `Fonts`, `Appearance`
+  and `Flattener` each carried.
+
 ## [0.4.0] - 2026-07-27
 
 ### Added

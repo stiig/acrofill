@@ -16,8 +16,10 @@
 # Appearance to confirm nothing drifted.
 $LOAD_PATH.unshift File.expand_path('../lib', __dir__)
 require 'acrofill'
-require 'strscan'
 require 'tmpdir'
+# Shared with spec/pdftk_parity_spec.rb so the benchmark that produced the
+# pinned numbers and the spec that checks them read a stream identically.
+require_relative '../spec/support/content_stream'
 
 TOLERANCE = 0.01
 
@@ -41,35 +43,6 @@ def run_pdftk(template, data, out)
     File.binwrite(fdf, fdf_for(data))
     system('pdftk', template, 'fill_form', fdf, 'output', out, out: File::NULL, err: File::NULL)
   end
-end
-
-# Reduces one appearance stream to [[x, y, text], ...], resolving relative
-# Td/T* against the absolute Tm pdftk emits.
-def drawn_lines(stream)
-  scanner = StringScanner.new(stream)
-  number = /-?[\d.]+/
-  x = 0.0
-  y = 0.0
-  leading = 0.0
-  lines = []
-  until scanner.eos?
-    if scanner.scan(/(#{number})\s+(#{number})\s+(#{number})\s+(#{number})\s+(#{number})\s+(#{number})\s+Tm/)
-      x = scanner[5].to_f
-      y = scanner[6].to_f
-    elsif scanner.scan(/(#{number})\s+(#{number})\s+(?:Td|TD)/)
-      x += scanner[1].to_f
-      y += scanner[2].to_f
-    elsif scanner.scan(/(#{number})\s+TL/)
-      leading = scanner[1].to_f
-    elsif scanner.scan('T*')
-      y -= leading
-    elsif scanner.scan(/\(((?:[^()\\]|\\.)*)\)\s*Tj/)
-      lines << [x, y, scanner[1]]
-    else
-      scanner.getch
-    end
-  end
-  lines
 end
 
 # Fully-qualified field name, so a kid widget is reported as "week.0"
@@ -100,7 +73,7 @@ def appearances(path)
     stream = normal.unfiltered_data
     result[qualified_name(objects, obj)] = {
       size: stream[%r{/\S+\s+([\d.]+)\s+Tf}, 1].to_f,
-      lines: drawn_lines(stream)
+      lines: ContentStream.text_positions(stream)
     }
   end
   result

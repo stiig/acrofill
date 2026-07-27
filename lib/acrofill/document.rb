@@ -136,6 +136,27 @@ module Acrofill
       end
     end
 
+    # A /Rect or /BBox as [llx, lly, urx, ury]: the value and each corner may
+    # be indirect, and the corners may be given in either order. Returns nil
+    # when it is not four finite numbers — a non-finite corner would subtract
+    # into a NaN width or height, which every later comparison silently
+    # passes and every later clamp raises on.
+    def normalized_box(raw)
+      box = deref(raw)
+      return nil unless box.is_a?(Array) && box.size == 4
+
+      corners = box.map { |value| deref(value) }
+      return nil unless corners.all? { |corner| corner.is_a?(Numeric) && corner.to_f.finite? }
+
+      xs = [corners[0].to_f, corners[2].to_f].sort
+      ys = [corners[1].to_f, corners[3].to_f].sort
+      # Corners far enough apart still overflow when subtracted, and the
+      # width and height every caller derives have to be usable too.
+      return nil unless (xs[1] - xs[0]).finite? && (ys[1] - ys[0]).finite?
+
+      [xs[0], ys[0], xs[1], ys[1]]
+    end
+
     # Resolves an attribute inheritable through the /Parent chain
     # (field attributes like /FT, /DA, /Q or page attributes).
     def inherited_value(node, key)

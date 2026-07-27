@@ -9,8 +9,6 @@
 # pdftk writes its placement as `1 0 0 1 x y Tm`, acrofill as `x y Td`; both
 # reduce to the same first-baseline coordinate. pdftk rounds the numbers it
 # prints to two decimals, hence the 0.01 tolerances.
-require 'strscan'
-
 RSpec.describe 'pdftk geometry parity' do
   around do |example|
     Dir.mktmpdir('acrofill-parity') do |dir|
@@ -64,33 +62,9 @@ RSpec.describe 'pdftk geometry parity' do
     data
   end
 
-  # [x, y] of every drawn line, resolving the relative Td/T* into absolute
-  # coordinates so they can be compared with pdftk's absolute Tm.
+  # [x, y] of every drawn line.
   def baselines
-    scanner = StringScanner.new(stream)
-    number = /-?[\d.]+/
-    x = 0.0
-    y = 0.0
-    leading = 0.0
-    lines = []
-    until scanner.eos?
-      if scanner.scan(/1 0 0 1 (#{number}) (#{number}) Tm/)
-        x = scanner[1].to_f
-        y = scanner[2].to_f
-      elsif scanner.scan(/(#{number}) (#{number}) Td/)
-        x += scanner[1].to_f
-        y += scanner[2].to_f
-      elsif scanner.scan(/(#{number}) TL/)
-        leading = scanner[1].to_f
-      elsif scanner.scan('T*')
-        y -= leading
-      elsif scanner.scan(/\((?:[^()\\]|\\.)*\) Tj/)
-        lines << [x, y]
-      else
-        scanner.getch
-      end
-    end
-    lines
+    ContentStream.text_positions(stream).map { |x, y, _text| [x, y] }
   end
 
   describe 'single-line baseline' do

@@ -30,7 +30,6 @@ module Acrofill
     # not consult /MissingWidth (verified — setting it changes nothing).
     OUT_OF_RANGE_WIDTH = 0
     SUBSET_PREFIX = /\A[A-Z]{6}\+/
-    IDENTITY = Array.new(256) { |code| code }.freeze
 
     def initialize(doc, acroform)
       @doc = doc
@@ -42,7 +41,7 @@ module Acrofill
     # Metrics::Font for the font a /DA string names.
     def metrics(resource_name)
       key = resource_name.to_sym
-      @metrics[key] ||= build(@doc.deref(entry(key)))
+      @metrics[key] ||= build(@doc.deref(dr_fonts[key]))
     end
 
     # Indirect reference to that font, for the appearance /Resources. Fonts
@@ -53,7 +52,7 @@ module Acrofill
       key = resource_name.to_sym
       @references[key] ||=
         begin
-          found = entry(key)
+          found = dr_fonts[key]
           found ? @doc.ref_for(found) : fallback
         end
     end
@@ -69,10 +68,6 @@ module Acrofill
         end
     end
 
-    def entry(key)
-      dr_fonts[key]
-    end
-
     def fallback
       @fallback ||=
         @doc.add(Type: :Font, Subtype: :Type1, BaseFont: :Helvetica, Encoding: :WinAnsiEncoding)
@@ -85,31 +80,8 @@ module Acrofill
       standard = Metrics.standard_font(name)
       ascender, descender, top, bottom = vertical(dict, standard)
       Metrics::Font.new(widths(dict) || Metrics.widths_for(name),
-                        ascender, descender, top, bottom, remap(dict)).freeze
-    end
-
-    # A 256-entry code translation table when /Encoding /Differences moves
-    # glyphs to codes other than their WinAnsi ones, else nil. Without it a
-    # value is drawn with whatever glyphs happen to sit at its bytes: a font
-    # that puts "A" at code 90 would render "AZ" as "ZA".
-    def remap(dict)
-      differences = differences(dict)
-      return nil if differences.empty?
-
-      by_code = {}
-      Metrics::WIN_ANSI_GLYPHS.each_with_index do |glyph, index|
-        by_code[index + Metrics::FIRST_CODE] = glyph if glyph
-      end
-      differences.each { |code, glyph| by_code[code] = glyph }
-
-      at = {}
-      by_code.each { |code, glyph| at[glyph] ||= code }
-      table = Array.new(256) { |code| code }
-      Metrics::WIN_ANSI_GLYPHS.each_with_index do |glyph, index|
-        code = glyph && at[glyph]
-        table[index + Metrics::FIRST_CODE] = code if code
-      end
-      table == IDENTITY ? nil : table.freeze
+                        ascender, descender, top, bottom,
+                        Metrics.remap_for(differences(dict))).freeze
     end
 
     # /Differences is a flat array where an integer restarts the code
@@ -163,11 +135,11 @@ module Acrofill
 
     def vertical(dict, standard)
       descriptor = @doc.deref(dict[:FontDescriptor])
-      descriptor = nil unless descriptor.is_a?(Hash)
+      descriptor = {} unless descriptor.is_a?(Hash)
       bottom, top = font_bbox(descriptor)
       [
-        (descriptor && number(descriptor[:Ascent])) || standard&.ascender || DEFAULT_ASCENDER,
-        (descriptor && number(descriptor[:Descent])) || standard&.descender || DEFAULT_DESCENDER,
+        number(descriptor[:Ascent]) || standard&.ascender || DEFAULT_ASCENDER,
+        number(descriptor[:Descent]) || standard&.descender || DEFAULT_DESCENDER,
         top || standard&.bbox_top || DEFAULT_BBOX_TOP,
         bottom || standard&.bbox_bottom || DEFAULT_BBOX_BOTTOM
       ]
@@ -175,7 +147,7 @@ module Acrofill
 
     # [lower y, upper y] of /FontBBox, or [nil, nil] when it is unusable.
     def font_bbox(descriptor)
-      box = descriptor && @doc.deref(descriptor[:FontBBox])
+      box = @doc.deref(descriptor[:FontBBox])
       return [nil, nil] unless box.is_a?(Array) && box.size == 4
 
       [number(box[1]), number(box[3])]

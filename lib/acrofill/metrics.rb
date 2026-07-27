@@ -18,6 +18,7 @@ module Acrofill
     WINDOWS_1252 = Encoding::Windows_1252
     # Encodings whose bytes are already the codes the font is drawn with.
     BYTE_ENCODINGS = [Encoding::Windows_1252, Encoding::BINARY].freeze
+    IDENTITY = Array.new(256) { |code| code }.freeze
 
     # The standard-14 text cuts, indexed by bold + 2 * italic per family.
     CUTS = {
@@ -202,6 +203,11 @@ module Acrofill
         text.b.each_byte.map { |code| remap[code] }.pack('C*')
       end
 
+      # Width of +text+ at +size+ points, in points.
+      def width_of(text, size)
+        Metrics.string_width(text, widths, size)
+      end
+
       def ascent(size) = ascender * size / 1000.0
 
       def descent(size) = -descender * size / 1000.0
@@ -225,6 +231,44 @@ module Acrofill
         (code >= FIRST_CODE && widths[code - FIRST_CODE]) || DEFAULT_WIDTH
       end
       units * size / 1000.0
+    end
+
+    # A 256-entry code translation table for a font whose /Encoding moves
+    # glyphs off their WinAnsi codes, or nil when nothing moves. +differences+
+    # is {code => glyph name}, as /Differences declares it.
+    def self.remap_for(differences)
+      return nil if differences.empty?
+
+      at = drawn_at(differences)
+      table = IDENTITY.dup
+      WIN_ANSI_GLYPHS.each_with_index do |glyph, index|
+        table[index + FIRST_CODE] = at[glyph] if at[glyph]
+      end
+      table == IDENTITY ? nil : table.freeze
+    end
+
+    # glyph => the code this font draws it at. The WinAnsi codes are claimed
+    # first, in ascending order, so a glyph keeps the code it normally has; a
+    # /Differences entry parked on a code WinAnsi leaves undefined (129, 141,
+    # 143, 144, 157, or anything below 32) only wins a glyph that no WinAnsi
+    # code draws. That preference matters because widths are looked up by
+    # code: an embedded /Widths array covers the codes the base encoding uses,
+    # not the holes a subset font parks its spare glyphs in.
+    #
+    # Codes outside a byte are ignored rather than trusted: the table they
+    # would land in is packed with 'C*', which truncates instead of failing.
+    def self.drawn_at(differences)
+      at = {}
+      WIN_ANSI_GLYPHS.each_with_index do |win_ansi, index|
+        next unless win_ansi
+
+        code = index + FIRST_CODE
+        at[differences[code] || win_ansi] ||= code
+      end
+      differences.each do |code, glyph|
+        at[glyph] ||= code if code.is_a?(Integer) && code.between?(0, 255)
+      end
+      at
     end
 
     # Metrics for a BaseFont name. Standard-14 names resolve directly;
@@ -276,6 +320,6 @@ module Acrofill
       str.encode(WINDOWS_1252, invalid: :replace, undef: :replace, replace: '?')
     end
 
-    private_class_method :serif?, :weight_index, :to_win_ansi
+    private_class_method :serif?, :weight_index, :to_win_ansi, :drawn_at
   end
 end

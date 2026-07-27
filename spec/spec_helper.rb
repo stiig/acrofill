@@ -12,6 +12,7 @@ require 'acrofill'
 require 'tmpdir'
 require_relative 'support/fixture_pdf'
 require_relative 'support/raw_pdf'
+require_relative 'support/content_stream'
 
 RSpec.configure do |config|
   config.expect_with(:rspec) { |c| c.syntax = :expect }

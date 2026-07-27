@@ -82,12 +82,6 @@ module Acrofill
       true
     end
 
-    def build_appearance(node, widget, value, multiline, comb)
-      return nil if value.empty?
-
-      @appearance.build(node, widget, value, multiline: multiline, comb: comb)
-    end
-
     def fill_text(group, value)
       node = group[:node]
       node[:V] = pdf_text_string(value)
@@ -98,7 +92,7 @@ module Acrofill
       comb = comb_cells(node, flags, multiline)
       group[:widgets].each do |widget|
         widget.delete(:AS)
-        ap_ref = build_appearance(node, widget, value, multiline, comb)
+        ap_ref = @appearance.build(node, widget, value, multiline:, comb:) unless value.empty?
         # An unusable geometry yields no appearance; dropping /AP is still
         # required, or the widget would keep rendering the *previous* value
         # while /V already holds the new one.

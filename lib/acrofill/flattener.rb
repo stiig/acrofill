@@ -75,8 +75,8 @@ module Acrofill
       dict = xobject.is_a?(StreamObject) ? xobject.dict : xobject&.hash
       return nil unless dict.is_a?(Hash)
 
-      bbox = normalize_box(@doc.deref(dict[:BBox]))
-      rect = normalize_box(@doc.deref(widget[:Rect]))
+      bbox = @doc.normalized_box(dict[:BBox])
+      rect = @doc.normalized_box(widget[:Rect])
       return nil unless bbox && rect
 
       # Appearance streams are form XObjects, but /Type and /Subtype are
@@ -103,8 +103,10 @@ module Acrofill
     def transformed_bbox(bbox, matrix)
       x0, y0, x1, y1 = bbox
       matrix = matrix.map { |m| @doc.deref(m) } if matrix.is_a?(Array)
+      # A non-finite entry is as malformed as a missing one: it multiplies
+      # into the NaN that Array#min then raises on.
       return [x0, y0, x1, y1] unless matrix.is_a?(Array) && matrix.size == 6 &&
-                                     matrix.all?(Numeric)
+                                     matrix.all? { |m| m.is_a?(Numeric) && m.to_f.finite? }
 
       a, b, c, d, e, f = matrix.map(&:to_f)
       xs = []
@@ -130,20 +132,6 @@ module Acrofill
         normal = states[state]
       end
       normal
-    end
-
-    # Derefs each element (array entries may legally be indirect objects)
-    # and returns [llx, lly, urx, ury], or nil when the box is not four
-    # numbers.
-    def normalize_box(box)
-      return nil unless box.is_a?(Array) && box.size == 4
-
-      nums = box.map { |n| @doc.deref(n) }
-      return nil unless nums.all?(Numeric)
-
-      xs = [nums[0].to_f, nums[2].to_f].sort
-      ys = [nums[1].to_f, nums[3].to_f].sort
-      [xs[0], ys[0], xs[1], ys[1]]
     end
 
     # A page's /Resources (and its /XObject subdictionary) are template
