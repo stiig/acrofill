@@ -31,22 +31,27 @@ module Acrofill
     def flatten_page(page)
       annot_refs = @doc.deref(page[:Annots])
       annot_refs = [] unless annot_refs.is_a?(Array)
-      annots = annot_refs.map { |a| [a, @doc.deref(a)] }
-      widgets, others = annots.partition { |_ref, dict| dict.is_a?(Hash) && dict[:Subtype] == :Widget }
+      # A reference that does not resolve to a dictionary is dropped rather
+      # than carried over: it has no object to renumber, so the Writer would
+      # serialize it as a bare `null` inside /Annots, which is not a legal
+      # annotation array.
+      annots = annot_refs.filter_map do |ref|
+        dict = @doc.deref(ref)
+        [ref, dict] if dict.is_a?(Hash)
+      end
+      widgets, others = annots.partition { |_ref, dict| @doc.deref(dict[:Subtype]) == :Widget }
       return if widgets.empty?
 
-      stamps = []
-      widgets.each do |_ref, widget|
-        stamp = stamp_operations(page, widget)
-        stamps << stamp if stamp
-      end
+      @pending = {}
+      stamps = widgets.filter_map { |_ref, widget| stamp_operations(widget) }
+      install_xobjects(page, @pending) unless @pending.empty?
 
       unless stamps.empty?
-        wrap = ->(bytes) { @doc.add(StreamObject.new({}, bytes.b)) }
         derefed = @doc.deref(page[:Contents])
         contents = (derefed.is_a?(Array) ? derefed : [page[:Contents]]).compact
-        contents = contents.map { |stream| @doc.ref_for(stream) }
-        page[:Contents] = [wrap.call("q\n"), *contents, wrap.call("\nQ\n#{stamps.join("\n")}\n")]
+                                                                       .map { |stream| @doc.ref_for(stream) }
+        page[:Contents] = [content_stream("q\n"), *contents,
+                           content_stream("\nQ\n#{stamps.join("\n")}\n")]
       end
 
       remaining = others.map(&:first)
@@ -57,12 +62,16 @@ module Acrofill
       end
     end
 
+    def content_stream(bytes)
+      @doc.add(StreamObject.new({}, bytes.b))
+    end
+
     # Returns content-stream operations placing the widget's normal
     # appearance onto the page, or nil when there is nothing to draw.
     # Implements the appearance-box algorithm of PDF 32000 §12.5.5: the
     # form's /Matrix is applied to its BBox, and the resulting extent is
     # mapped onto the annotation rectangle.
-    def stamp_operations(page, widget)
+    def stamp_operations(widget)
       # Flattening produces the document as it is displayed, so a widget the
       # viewer would not show is dropped rather than burned in: /F Hidden,
       # and NoView, which means "not on screen" (PDF 32000 §12.5.3). pdftk
@@ -72,11 +81,15 @@ module Acrofill
 
       ap_ref = normal_appearance(widget)
       xobject = @doc.deref(ap_ref)
-      dict = xobject.is_a?(StreamObject) ? xobject.dict : xobject&.hash
-      return nil unless dict.is_a?(Hash)
+      dict = appearance_dict(xobject)
+      return nil unless dict
 
       bbox = @doc.normalized_box(dict[:BBox])
-      rect = @doc.normalized_box(widget[:Rect])
+      # /Rect is inheritable through the /Parent chain, and Appearance#build
+      # honours that when it draws the value. Reading only widget[:Rect] here
+      # would stamp nothing for a kid widget whose rectangle lives on the
+      # parent field — filling the value and then silently dropping it.
+      rect = @doc.normalized_box(@doc.inherited_value(widget, :Rect))
       return nil unless bbox && rect
 
       # Appearance streams are form XObjects, but /Type and /Subtype are
@@ -88,14 +101,31 @@ module Acrofill
       bx0, by0, bx1, by1 = transformed_bbox(bbox, @doc.deref(dict[:Matrix]))
       bw = bx1 - bx0
       bh = by1 - by0
-      return nil if bw <= 0 || bh <= 0
+      # A degenerate annotation rectangle scales to a singular matrix, which
+      # PDF 32000 §8.3.3 forbids; Appearance#build rejects the same geometry.
+      return nil unless positive_extent?(bw, bh) && positive_extent?(urx - llx, ury - lly)
 
       sx = (urx - llx) / bw
       sy = (ury - lly) / bh
-      name = register_xobject(page, ap_ref)
       matrix = [sx, 0, 0, sy, llx - (bx0 * sx), lly - (by0 * sy)]
-      ops = matrix.map { |n| Serializer.format_number(n.to_f) }
-      "q #{ops.join(' ')} cm /#{name} Do Q"
+      return nil unless matrix.all? { |n| n.to_f.finite? }
+
+      name = register_xobject(ap_ref)
+      "q #{matrix.map { |n| Serializer.format_number(n.to_f) }.join(' ')} cm /#{name} Do Q"
+    end
+
+    # The dictionary of an appearance XObject, or nil. A /AP /N that derefs
+    # to something other than a stream has no dictionary — asking a plain
+    # Hash or Array for #hash would return Object#hash, an Integer.
+    def appearance_dict(xobject)
+      case xobject
+      when StreamObject then xobject.dict
+      when PDF::Reader::Stream then xobject.hash
+      end
+    end
+
+    def positive_extent?(width, height)
+      width.finite? && height.finite? && width.positive? && height.positive?
     end
 
     # Bounding box of the (already normalized) BBox corners after the
@@ -115,6 +145,11 @@ module Acrofill
         xs << ((a * x) + (c * y) + e)
         ys << ((b * x) + (d * y) + f)
       end
+      # Finite entries still multiply and add into a NaN (Infinity plus its
+      # negation), which Array#min raises on rather than returning; a
+      # transform that overflows is as unusable as a malformed one.
+      return [x0, y0, x1, y1] unless xs.all?(&:finite?) && ys.all?(&:finite?)
+
       [xs.min, ys.min, xs.max, ys.max]
     end
 
@@ -134,21 +169,27 @@ module Acrofill
       normal
     end
 
+    # Names the stamp and records it; the page's /Resources are rewritten
+    # once per page by #install_xobjects rather than once per widget.
+    def register_xobject(ap_ref)
+      @stamp_counter += 1
+      name = :"AcrofillAP#{@stamp_counter}"
+      @pending[name] = @doc.ref_for(ap_ref)
+      name
+    end
+
     # A page's /Resources (and its /XObject subdictionary) are template
     # data: anything that is not a dictionary is replaced rather than
-    # indexed, which would raise TypeError on an Array or a stream.
-    def register_xobject(page, ap_ref)
+    # indexed, which would raise TypeError on an Array or a stream. Both are
+    # copied before mutation, since a /Resources reached through /Parent is
+    # shared with every other page under that node.
+    def install_xobjects(page, pending)
       resources = @doc.deref(page[:Resources]) || @doc.deref(@doc.inherited_value(page, :Resources))
       resources = resources.is_a?(Hash) ? resources.dup : {}
       xobjects = @doc.deref(resources[:XObject])
       xobjects = xobjects.is_a?(Hash) ? xobjects.dup : {}
-
-      @stamp_counter += 1
-      name = :"AcrofillAP#{@stamp_counter}"
-      xobjects[name] = @doc.ref_for(ap_ref)
-      resources[:XObject] = xobjects
+      resources[:XObject] = xobjects.merge(pending)
       page[:Resources] = resources
-      name
     end
   end
 end

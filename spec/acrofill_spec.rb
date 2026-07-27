@@ -422,6 +422,128 @@ RSpec.describe Acrofill do
     end
   end
 
+  describe 'the pdf-forms-shaped API' do
+    it 'honours flatten given to the constructor, not just to the call' do
+      # PdfForms.new(path, flatten: true) makes flatten a default for every
+      # fill; accepting the option and ignoring it shipped editable PDFs.
+      described_class.new('/usr/bin/pdftk', flatten: true)
+                     .fill_form(template, output, { 'name' => 'Jane' })
+
+      expect(acroform).to be_nil
+      expect(reader.pages.first.text).to include('Jane')
+    end
+
+    it 'lets a per-call flatten stand on its own' do
+      described_class.new('/usr/bin/pdftk').fill_form(template, output, { 'name' => 'Jane' })
+      expect(acroform).not_to be_nil
+    end
+
+    it 'refuses to write a filled document over its own template' do
+      # Template#fill_form takes the destination first while Filler#fill_form
+      # takes the template first. Since Template never re-reads the file, the
+      # overwrite went unnoticed until another consumer opened the template.
+      cached = Acrofill::Template.new(template)
+      before = File.binread(template)
+
+      expect { cached.fill_form(template, { 'name' => 'Jane' }) }
+        .to raise_error(Acrofill::Error, /template itself/)
+      expect(File.binread(template)).to eq(before)
+    end
+
+    it 'recognizes the template through an equivalent path' do
+      cached = Acrofill::Template.new(template)
+      disguised = File.join(File.dirname(template), '.', File.basename(template))
+
+      expect { cached.fill_form(disguised, { 'name' => 'Jane' }) }
+        .to raise_error(Acrofill::Error, /template itself/)
+    end
+
+    it 'reports a field name that is not UTF-8 without mangling it' do
+      # Scrubbing turned every accented byte into U+FFFD, renaming the field
+      # to something no caller could pass back in and leaving it unfillable.
+      path = RawPdf.write(@dir, [
+                            '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                            '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                            '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                            '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                            "<< /Type /Annot /Subtype /Widget /FT /Tx /T (Betrag\xF6) " \
+                            '/Rect [10 700 300 730] /DA (/Helv 10 Tf 0 g) >>'
+                          ], name: 'latin1.pdf')
+
+      expect(described_class.field_names(path)).to eq(['Betragö'])
+
+      described_class.fill_form(path, output, { 'Betragö' => 'x' })
+      field = PDF::Reader::ObjectHash.new(output).values.find { |o| o.is_a?(Hash) && o[:FT] == :Tx }
+      expect(field[:V]).to eq('x')
+    end
+  end
+
+  describe 'fields sharing one name' do
+    def mixed_types
+      blank = "<< /BBox [0 0 12 12] /Length 0 >>\nstream\nendstream"
+      RawPdf.write(@dir, [
+                     '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                     '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                     '<< /Fields [5 0 R 6 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R 6 0 R] >>',
+                     '<< /Type /Annot /Subtype /Widget /FT /Tx /T (dup) /Rect [10 700 300 730] ' \
+                     '/DA (/Helv 10 Tf 0 g) >>',
+                     '<< /Type /Annot /Subtype /Widget /FT /Btn /T (dup) /Rect [10 600 22 612] ' \
+                     '/AS /Off /AP << /N << /Yes 7 0 R /Off 8 0 R >> >> >>',
+                     blank,
+                     blank
+                   ], name: 'dup.pdf')
+    end
+
+    it 'fills each one through the path its own /FT asks for' do
+      # Dispatching on the first dict's type pushed the checkbox through the
+      # text path, overwriting its /AP state dictionary with a text
+      # appearance and deleting its /AS.
+      described_class.fill_form(mixed_types, output, { 'dup' => 'Yes' })
+
+      objects = PDF::Reader::ObjectHash.new(output)
+      text, button = objects.values.select { |o| o.is_a?(Hash) && o[:T] == 'dup' }
+                                   .sort_by { |o| o[:FT].to_s }.reverse
+
+      expect(text[:V]).to eq('Yes')
+      expect(button[:V]).to eq(:Yes)
+      expect(button[:AS]).to eq(:Yes)
+    end
+  end
+
+  describe 'checkbox values' do
+    def checkbox
+      blank = "<< /BBox [0 0 12 12] /Length 0 >>\nstream\nendstream"
+      RawPdf.write(@dir, [
+                     '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                     '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                     '<< /Fields [5 0 R] >>',
+                     '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                     '<< /Type /Annot /Subtype /Widget /FT /Btn /T (agree) /Rect [0 0 12 12] ' \
+                     '/AS /Off /AP << /N << /Yes 6 0 R /Off 7 0 R >> >> >>',
+                     blank,
+                     blank
+                   ], name: 'check.pdf')
+    end
+
+    def state_for(value)
+      described_class.fill_form(checkbox, output, { 'agree' => value })
+      PDF::Reader::ObjectHash.new(output).values.find { |o| o.is_a?(Hash) && o[:T] == 'agree' }[:V]
+    end
+
+    it 'unchecks for falsy values whatever their case' do
+      # Only an exact "Off"/"false"/"no" unchecked, so "off", "No" and 0 fell
+      # through to the single-on-state branch and ticked the box instead.
+      ['off', 'Off', 'No', 'NO', 'FALSE', '0', 0, ''].each do |value|
+        expect(state_for(value)).to eq(:Off), "#{value.inspect} should uncheck"
+      end
+    end
+
+    it 'still checks for a real on state' do
+      expect(state_for('Yes')).to eq(:Yes)
+    end
+  end
+
   describe Acrofill::Serializer do
     subject(:serializer) { described_class.new({}) }
 

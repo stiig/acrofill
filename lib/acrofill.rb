@@ -15,9 +15,9 @@ require_relative 'acrofill/template'
 module Acrofill
   class Error < StandardError; end
 
-  # Mirrors the PdfForms.new(pdftk_path) constructor shape.
-  def self.new(*)
-    Filler.new(*)
+  # Mirrors the PdfForms.new(pdftk_path, options) constructor shape.
+  def self.new(*, **)
+    Filler.new(*, **)
   end
 
   def self.fill_form(template, destination, data = {}, options = {})

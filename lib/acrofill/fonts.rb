@@ -53,7 +53,12 @@ module Acrofill
       @references[key] ||=
         begin
           found = dr_fonts[key]
-          found ? @doc.ref_for(found) : fallback
+          # #metrics already degrades to standard Helvetica for a /DR entry
+          # that is not a font dictionary; writing that same entry into the
+          # appearance's /Resources would point /Tf at a non-font object (or
+          # at a dangling reference the Writer serializes as `null`), so the
+          # two have to agree on what counts as usable.
+          @doc.deref(found).is_a?(Hash) ? @doc.ref_for(found) : fallback
         end
     end
 
@@ -79,9 +84,9 @@ module Acrofill
       name = base_font_name(dict)
       standard = Metrics.standard_font(name)
       ascender, descender, top, bottom = vertical(dict, standard)
-      Metrics::Font.new(widths(dict) || Metrics.widths_for(name),
-                        ascender, descender, top, bottom,
-                        Metrics.remap_for(differences(dict))).freeze
+      Metrics.build_font(widths(dict) || Metrics.widths_for(name),
+                         ascender, descender, top, bottom,
+                         Metrics.remap_for(differences(dict)))
     end
 
     # /Differences is a flat array where an integer restarts the code

@@ -7,6 +7,11 @@ module Acrofill
     MULTILINE_FLAG = 1 << 12
     PUSHBUTTON_FLAG = 1 << 16
     COMB_FLAG = 1 << 24
+    # Values that uncheck a button, compared case-insensitively: "Off"
+    # unchecking while "off" ticked the box was a silent data error. A state
+    # the template actually names is matched first, so a checkbox whose on
+    # state is literally called "no" stays checkable.
+    OFF_VALUES = ['', 'off', 'false', 'no', '0'].freeze
 
     Field = Struct.new(:name, :type, :value, :states, keyword_init: true)
 
@@ -44,11 +49,17 @@ module Acrofill
       groups = @fields.fetch(name, [])
       return false if groups.empty?
 
-      case field_type(groups.first[:node])
-      when :Btn then fill_button(groups, value)
-      when :Tx, :Ch, nil then fill_text_groups(groups, value)
-      else false # signatures and unknown types are left untouched
-      end
+      # Several field dicts may share one name without sharing one /FT.
+      # Dispatching on the first one's type would push a checkbox through
+      # the text path, overwriting its /AP state dictionary with a text
+      # appearance, so each type is handled with its own groups.
+      groups.group_by { |group| field_type(group[:node]) }.map do |type, typed|
+        case type
+        when :Btn then fill_button(typed, value)
+        when :Tx, :Ch, nil then fill_text_groups(typed, value)
+        else false # signatures and unknown types are left untouched
+        end
+      end.any?
     end
 
     # Stamps every visible widget appearance into its page's content and
@@ -131,7 +142,7 @@ module Acrofill
       state =
         if named
           named
-        elsif ['', 'Off', 'false', 'no'].include?(value)
+        elsif OFF_VALUES.include?(value.downcase)
           :Off
         elsif states.size == 1
           states.first
@@ -227,7 +238,15 @@ module Acrofill
         raw.byteslice(2..).force_encoding('UTF-16BE')
            .encode('UTF-8', invalid: :replace, undef: :replace)
       else
-        raw.dup.force_encoding('UTF-8').scrub
+        as_utf8 = raw.dup.force_encoding('UTF-8')
+        return as_utf8 if as_utf8.valid_encoding?
+
+        # Not UTF-8, so it is PDFDocEncoded (or Latin-1) — decode it rather
+        # than scrub it. Scrubbing turns every accented byte into U+FFFD,
+        # which renames the field to something no caller can pass back in,
+        # leaving it permanently unfillable.
+        raw.dup.force_encoding('Windows-1252')
+           .encode('UTF-8', invalid: :replace, undef: :replace)
       end
     end
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-27
+
 ### Fixed
 
 - A `/Rect` or `/BBox` whose corners are not four finite numbers, or whose
@@ -22,6 +24,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A non-finite point size in a `/DA` string degrades to "fit the box", the
   way a `/DA` with no size already does, rather than raising. A finite but
   enormous one no longer overflows while being scaled down to fit.
+- `Acrofill.new(path, flatten: true)` now applies that option to every
+  `#fill_form` call, matching the `PdfForms.new` shape it mirrors. Options
+  given to the constructor were accepted and discarded, so the drop-in path
+  shipped interactive documents where flattened ones were asked for.
+- `Template#fill_form` refuses a destination equal to its own source instead
+  of overwriting the template in place. The argument order is the reverse of
+  `Filler#fill_form`, and since `Template` never re-reads the file the
+  corruption stayed invisible for the life of the process.
+- A widget whose `/Rect` is inherited from its parent field is now stamped
+  when flattening. The value was filled, then dropped from the output.
+- Fields sharing one fully-qualified name but not one `/FT` are each filled
+  through their own type's path. A checkbox sharing a name with a text field
+  had its `/AP` state dictionary overwritten with a text appearance.
+- Checkbox values are matched case-insensitively, so `"off"`, `"No"` and `0`
+  uncheck rather than falling through and ticking the box. A state the
+  template itself names still wins.
+- Field names that are neither UTF-16BE nor UTF-8 are decoded rather than
+  scrubbed. Every accented byte became U+FFFD, renaming the field to
+  something no caller could pass back in.
+- Glyph widths are measured in the font's own code space, so a `/Encoding`
+  that moves a glyph onto a code below 32 measures that glyph instead of
+  charging the average width. Multiline wrapping likewise runs before
+  encoding, so a font that moves the space glyph off code 32 still wraps.
+- Font names are no longer read as width classes by substring alone:
+  `MonotypeCorsiva` is proportional, `Blackadder-ITC` is not bold, while
+  `Arial-Black` and `CourierNewPSMT` still classify as before.
+- `/DA` colour operands on opposite sides of the `Tf` triple are no longer
+  joined, which could fuse tokens that were never adjacent into a valid
+  looking operator and repaint the value.
+- A negative `/DA` size is treated as "fit the box", like zero, instead of
+  rendering at the 2pt floor on single-line fields but 12pt on multiline.
+- Flattening drops an annotation reference that resolves to nothing (it
+  serialized as a bare `null` in `/Annots`), honours an indirect `/Subtype`,
+  refuses a degenerate `/Rect` that would produce a singular matrix, and
+  survives a `/Matrix` whose finite entries multiply out of range.
+- A `/DR` font entry that is not a font dictionary no longer reaches the
+  generated appearance's `/Resources`, where it left `/Tf` pointing at a
+  non-font object.
+- A page's `/Resources` reached through `/Parent` is copied before the stamp
+  `/XObject` is added, so pages sharing that node are left alone.
+- `File.binwrite` failures surface as `Acrofill::Error`, the error the public
+  API documents, rather than a bare `Errno`.
 
 ### Changed
 
@@ -29,6 +73,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `Metrics::Font#width_of`; `Acrofill::Document` exposes
   `#normalized_box`. These replace private copies that `Fonts`, `Appearance`
   and `Flattener` each carried.
+- `Metrics.string_width` takes a 256-entry code-space table (from the new
+  `Metrics.build_font`) rather than a `/Widths`-shaped one indexed from code
+  32. Passing a `BaseFont` name still works.
+- The release workflow runs the specs and RuboCop before publishing; a tag
+  push matched no trigger in the CI workflow, so the gem could be pushed
+  with no test run behind it.
 
 ## [0.4.0] - 2026-07-27
 
@@ -190,7 +240,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PdfForms`-compatible entry points (`Acrofill.new`, `fill_form`, `fields`,
   `field_names`).
 
-[Unreleased]: https://github.com/stiig/acrofill/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/stiig/acrofill/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/stiig/acrofill/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/stiig/acrofill/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/stiig/acrofill/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/stiig/acrofill/compare/v0.1.2...v0.2.0

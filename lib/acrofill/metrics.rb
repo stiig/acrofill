@@ -29,8 +29,12 @@ module Acrofill
     # Family and weight hints for BaseFont names outside the standard 14.
     SERIF = /times|roman|serif|georgia|garamond/
     SANS = /sans/
-    FIXED = /courier|mono/
-    BOLD = /bold|black|heavy/
+    # "mono" must not swallow the Monotype foundry prefix: MonotypeCorsiva is
+    # a proportional script face, not a typewriter one.
+    FIXED = /courier|mono(?!type)/
+    # Likewise "black" is a weight only at the end of a word — Blackadder and
+    # Blackoak are display faces, Arial-Black and Roboto-Black are weights.
+    BOLD = /bold|black(?![a-z])|heavy/
     ITALIC = /italic|oblique/
 
     TABLES = {
@@ -195,7 +199,8 @@ module Acrofill
     # Everything the appearance code needs about one resolved face. +remap+
     # is a 256-entry code translation table, or nil when the font draws
     # WinAnsi codes as they are.
-    Font = Struct.new(:widths, :ascender, :descender, :bbox_top, :bbox_bottom, :remap) do
+    Font = Struct.new(:widths, :ascender, :descender, :bbox_top, :bbox_bottom, :remap,
+                      :code_widths) do
       # Windows-1252 text as the byte codes this font draws it with.
       def encode(text)
         return text unless remap
@@ -203,9 +208,10 @@ module Acrofill
         text.b.each_byte.map { |code| remap[code] }.pack('C*')
       end
 
-      # Width of +text+ at +size+ points, in points.
+      # Width of +text+ at +size+ points, in points. +text+ is in this font's
+      # own codes (the output of #encode), so it is measured in that space.
       def width_of(text, size)
-        Metrics.string_width(text, widths, size)
+        Metrics.string_width(text, code_widths, size)
       end
 
       def ascent(size) = ascender * size / 1000.0
@@ -218,18 +224,38 @@ module Acrofill
       def line_height(size) = (bbox_top - bbox_bottom) * size / 1000.0
     end
 
+    # A frozen Font, with its code-space width table derived once.
+    def self.build_font(widths, ascender, descender, top, bottom, remap = nil)
+      Font.new(widths, ascender, descender, top, bottom, remap,
+               code_width_table(widths, remap)).freeze
+    end
+
+    # Width of the glyph this font draws at each of the 256 byte codes.
+    # +widths+ is indexed by WinAnsi code, but /Differences can move a glyph
+    # onto any code — including one below 32, which no WinAnsi-indexed table
+    # can express — and the appearance stream emits the moved code. Measuring
+    # in the font's own code space is what keeps rendering and metrics in
+    # step; a code the font draws nothing at is worth nothing, not the
+    # average glyph width the old WinAnsi lookup fell back to.
+    def self.code_width_table(widths, remap)
+      table = Array.new(256, 0)
+      (FIRST_CODE..LAST_CODE).each do |code|
+        width = widths[code - FIRST_CODE] || DEFAULT_WIDTH
+        table[remap ? remap[code] : code] = width
+      end
+      table.freeze
+    end
+
     FONTS = VERTICAL.to_h do |name, (asc, desc, top, bottom)|
-      [name, Font.new(WIDTHS[name], asc, desc, top, bottom).freeze]
+      [name, build_font(WIDTHS[name], asc, desc, top, bottom)]
     end.freeze
 
-    # Width of +str+ at +size+ points. +widths+ is a table from #widths_for,
-    # or a BaseFont name (resolved here, at the cost of the lookup).
+    # Width of +str+ at +size+ points. +widths+ is a 256-entry code-space
+    # table from #code_width_table, or a BaseFont name (resolved here, at
+    # the cost of the lookup).
     def self.string_width(str, widths, size)
-      widths = widths_for(widths) unless widths.is_a?(Array)
-      str = to_win_ansi(str)
-      units = str.each_byte.sum do |code|
-        (code >= FIRST_CODE && widths[code - FIRST_CODE]) || DEFAULT_WIDTH
-      end
+      widths = font_for(widths).code_widths unless widths.is_a?(Array)
+      units = to_win_ansi(str).each_byte.sum { |code| widths[code] }
       units * size / 1000.0
     end
 

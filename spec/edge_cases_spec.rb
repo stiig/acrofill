@@ -238,6 +238,184 @@ RSpec.describe 'spec-legal edge cases' do
     expect(fonts).to eq(1)
   end
 
+  # A stream carrying +text+ verbatim, for values the font re-encodes.
+  def stream_containing(path, text)
+    found = nil
+    PDF::Reader.new(path).objects.each do |_ref, obj|
+      found = obj if obj.is_a?(PDF::Reader::Stream) && obj.data.include?(text)
+    end
+    found&.data
+  end
+
+  def page_annots(path)
+    objects = PDF::Reader::ObjectHash.new(path)
+    page = objects.values.find { |o| o.is_a?(Hash) && o[:Type] == :Page }
+    annots = objects.deref(page[:Annots])
+    (annots || []).map { |a| objects.deref(a) }
+  end
+
+  it 'stamps a widget whose rectangle lives on its parent field' do
+    # /Rect is inheritable, and the appearance is built from the inherited
+    # one. Reading only the widget's own /Rect when stamping filled the
+    # value and then dropped it, so flattening lost data silently.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [6 0 R] >>',
+                   '<< /FT /Tx /T (x) /Rect [10 700 300 730] /DA (/Helv 10 Tf 0 g) /Kids [6 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /Parent 5 0 R >>'
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'JANE' }, flatten: true)
+
+    expect(PDF::Reader.new(out).pages.first.text).to include('JANE')
+  end
+
+  it 'drops an annotation reference that resolves to nothing' do
+    # Carrying it over would serialize as a bare `null` inside /Annots,
+    # which is not a legal annotation array.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] ' \
+                   '/Annots [5 0 R 99 0 R 6 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [10 700 300 730] ' \
+                   '/DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] >>'
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'hi' }, flatten: true)
+
+    annots = page_annots(out)
+    expect(annots.size).to eq(1)
+    expect(annots).to all(be_a(Hash))
+  end
+
+  it 'recognizes a widget whose /Subtype is an indirect reference' do
+    # Missing it left a live interactive widget in a document whose
+    # /AcroForm flattening had already deleted.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype 6 0 R /FT /Tx /T (x) /Rect [10 700 300 730] ' \
+                   '/DA (/Helv 10 Tf 0 g) >>',
+                   '/Widget'
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'JANE' }, flatten: true)
+
+    expect(PDF::Reader.new(out).pages.first.text).to include('JANE')
+    expect(page_annots(out)).to be_empty
+  end
+
+  it 'does not stamp through a degenerate annotation rectangle' do
+    # A zero-width /Rect scales to a singular matrix, which PDF 32000
+    # §8.3.3 forbids; Appearance rejects the same geometry when drawing.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [50 50 50 62] ' \
+                   '/DA (/Helv 10 Tf 0 g) /AP << /N 6 0 R >> >>',
+                   "<< /Type /XObject /Subtype /Form /BBox [0 0 12 12] /Length 0 >>\nstream\nendstream"
+                 ])
+    Acrofill.fill_form(path, out, {}, flatten: true)
+
+    expect(stream_containing(out, 'AcrofillAP')).to be_nil
+  end
+
+  it 'survives a /Matrix whose finite entries multiply out of range' do
+    huge = "1#{'0' * 300}"
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [10 700 300 730] ' \
+                   '/DA (/Helv 10 Tf 0 g) /AP << /N 6 0 R >> >>',
+                   "<< /Type /XObject /Subtype /Form /BBox [-#{huge} -#{huge} #{huge} #{huge}] " \
+                   "/Matrix [#{huge} 0 #{huge} 0 0 0] /Length 0 >>\nstream\nendstream"
+                 ])
+    expect { Acrofill.fill_form(path, out, {}, flatten: true) }.not_to raise_error
+  end
+
+  it 'does not fuse /DA colour operands across the removed font operator' do
+    # "0.2 0.4 /Helv 12 Tf 0.6 rg" carries a malformed one-operand rg.
+    # Joining the two sides of the Tf triple made three numbers that were
+    # never adjacent look like a valid operator, painting the value in a
+    # colour the template never asked for.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [10 700 300 730] ' \
+                   '/DA (0.2 0.4 /Helv 12 Tf 0.6 rg) >>'
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'X' })
+
+    expect(appearance_data(out, 'X')).not_to include('0.2 0.4 0.6 rg')
+  end
+
+  it 'treats a /DA size of zero and a negative one alike' do
+    # A negative size is as meaningless as a missing one; disagreeing let
+    # one flag bit decide between a 12pt and a 2pt rendering.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/Helv 10 Tf 0 g) >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [10 700 300 720] ' \
+                   '/DA (/Helv -5 Tf 0 g) >>'
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'hi' })
+
+    expect(appearance_data(out, 'hi')).to include('/Helv 12 Tf')
+  end
+
+  it 'writes a usable font into the appearance when /DR names a non-font' do
+    # Measurement already degrades to standard Helvetica for such an entry;
+    # writing it into /Resources anyway pointed Tf at a non-font object.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/F1 10 Tf 0 g) /DR << /Font << /F1 42 >> >> >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [10 700 300 730] ' \
+                   '/DA (/F1 10 Tf 0 g) >>'
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'hi' })
+
+    objects = PDF::Reader::ObjectHash.new(out)
+    appearance = objects.values.find do |o|
+      o.is_a?(PDF::Reader::Stream) && o.data.include?('(hi) Tj')
+    end
+    font = objects.deref(objects.deref(appearance.hash[:Resources])[:Font])[:F1]
+    expect(objects.deref(font)).to include(Type: :Font)
+  end
+
+  it 'wraps multiline text whose font draws the space glyph off code 32' do
+    # /Differences [32 /bullet] moves space to code 160. Wrapping the
+    # encoded bytes left String#split no word boundary, so the whole value
+    # went out as one unwrapped line running past the box.
+    path = build([
+                   '<< /Type /Catalog /Pages 2 0 R /AcroForm 3 0 R >>',
+                   '<< /Type /Pages /Kids [4 0 R] /Count 1 >>',
+                   '<< /Fields [5 0 R] /DA (/F1 10 Tf 0 g) /DR << /Font << /F1 6 0 R >> >> >>',
+                   '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Annots [5 0 R] >>',
+                   '<< /Type /Annot /Subtype /Widget /FT /Tx /T (x) /Rect [10 600 160 700] ' \
+                   '/Ff 4096 /DA (/F1 10 Tf 0 g) >>',
+                   '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica ' \
+                   '/Encoding << /Type /Encoding /Differences [32 /bullet] >> >>'
+                 ])
+    Acrofill.fill_form(path, out, { 'x' => 'alpha beta gamma delta epsilon zeta eta theta' })
+
+    body = stream_containing(out, 'alpha')
+    expect(body.scan(') Tj').size).to be > 1
+  end
+
   it 'checks a button whose on state is literally named "no"' do
     blank = "<< /BBox [0 0 12 12] /Length 0 >>\nstream\nendstream"
     path = build([

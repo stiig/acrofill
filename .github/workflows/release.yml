@@ -17,4 +17,9 @@ jobs:
         with:
           ruby-version: '3.4'
           bundler-cache: true
+      # A tag push matches neither trigger in ci.yml, so without these the
+      # gem would publish with no test run at all — and a pushed version
+      # cannot be replaced on RubyGems.
+      - run: bundle exec rspec
+      - run: bundle exec rubocop
       - uses: rubygems/release-gem@v1
